@@ -347,17 +347,9 @@ _is_app_process() {
 	# Strip leading dot (e.g., ".opencode" → "opencode") — some binaries
 	# are installed with a dot-prefixed wrapper name
 	cmd_name="${cmd_name#.}"
-	# Case-insensitive: convert to lowercase via tr (bash 3.2 compatible)
-	local cmd_lower
-	cmd_lower=$(printf '%s' "$cmd_name" | tr '[:upper:]' '[:lower:]')
-	local app_name app_lower
-	for app_name in "${APP_PROCESS_NAMES[@]}"; do
-		app_lower=$(printf '%s' "$app_name" | tr '[:upper:]' '[:lower:]')
-		if [[ "$cmd_lower" == "$app_lower" ]]; then
-			return 0
-		fi
-	done
-	return 1
+	# Case-insensitive fixed-string match against the app process list
+	# Single grep invocation avoids per-item tr subshells in a loop
+	printf '%s\n' "${APP_PROCESS_NAMES[@]}" | grep -qixF -- "$cmd_name"
 }
 
 # Collect all monitored processes with their RSS and runtime

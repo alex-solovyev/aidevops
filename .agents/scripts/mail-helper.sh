@@ -276,6 +276,7 @@ transport_available() {
 #######################################
 transport_simplex_send() {
 	local envelope="$1"
+	local rc=0
 
 	if ! transport_available "simplex"; then
 		log_warn "SimpleX transport not available (simplex-chat not installed or simplex-helper.sh not found)"
@@ -284,8 +285,8 @@ transport_simplex_send() {
 
 	# Prefer group delivery (broadcast to all agents in the group)
 	if [[ -n "$SIMPLEX_MAIL_GROUP" ]]; then
-		"$SIMPLEX_HELPER" send-group "$SIMPLEX_MAIL_GROUP" "$envelope" 2>/dev/null
-		local rc=$?
+		rc=0
+		"$SIMPLEX_HELPER" send-group "$SIMPLEX_MAIL_GROUP" "$envelope" || rc=$?
 		if [[ $rc -eq 0 ]]; then
 			log_info "Relayed via SimpleX group: $SIMPLEX_MAIL_GROUP"
 			return 0
@@ -295,8 +296,8 @@ transport_simplex_send() {
 
 	# Fallback to direct contact
 	if [[ -n "$SIMPLEX_MAIL_CONTACT" ]]; then
-		"$SIMPLEX_HELPER" send "$SIMPLEX_MAIL_CONTACT" "$envelope" 2>/dev/null
-		local rc=$?
+		rc=0
+		"$SIMPLEX_HELPER" send "$SIMPLEX_MAIL_CONTACT" "$envelope" || rc=$?
 		if [[ $rc -eq 0 ]]; then
 			log_info "Relayed via SimpleX contact: $SIMPLEX_MAIL_CONTACT"
 			return 0
@@ -349,12 +350,17 @@ transport_matrix_send() {
 	local json_body
 	json_body=$(jq -n --arg body "$envelope" '{msgtype: "m.text", body: $body}')
 
-	local http_code
-	http_code=$(curl -sf -o /dev/null -w '%{http_code}' \
+	local http_code curl_stderr
+	curl_stderr=$(mktemp) || curl_stderr="/dev/null"
+	http_code=$(curl -sS -o /dev/null -w '%{http_code}' \
 		-X PUT "$endpoint" \
 		-H "Authorization: Bearer $access_token" \
 		-H "Content-Type: application/json" \
-		-d "$json_body" 2>/dev/null) || http_code="000"
+		-d "$json_body" 2>"$curl_stderr") || http_code="000"
+	if [[ "$http_code" != "200" && -s "$curl_stderr" ]]; then
+		log_warn "Matrix curl error to endpoint $endpoint: $(cat "$curl_stderr")"
+	fi
+	rm -f "$curl_stderr"
 
 	if [[ "$http_code" == "200" ]]; then
 		log_info "Relayed via Matrix room: $MATRIX_MAIL_ROOM"
@@ -535,14 +541,25 @@ receive_simplex() {
 		local msg_id from_agent to_agent msg_type priority convoy payload
 		IFS='|' read -r msg_id from_agent to_agent msg_type priority convoy payload <<<"$decoded"
 
+		local should_archive="true"
 		# Only ingest messages addressed to this agent or to "all"
 		if [[ "$to_agent" == "$agent_id" || "$to_agent" == "all" ]]; then
-			ingest_remote_message "$msg_id" "$from_agent" "$to_agent" "$msg_type" "$priority" "$convoy" "$payload"
-			count=$((count + 1))
+			if ingest_remote_message "$msg_id" "$from_agent" "$to_agent" "$msg_type" "$priority" "$convoy" "$payload"; then
+				count=$((count + 1))
+			else
+				should_archive="false"
+				log_warn "Failed to ingest envelope $(basename "$envelope_file"); leaving for retry"
+			fi
 		fi
 
-		# Archive processed envelope
-		mv "$envelope_file" "${envelope_file}.processed" 2>/dev/null || rm -f "$envelope_file"
+		# Archive processed envelope only when safe to do so
+		if [[ "$should_archive" == "true" ]]; then
+			local archive_rc=0
+			mv "$envelope_file" "${envelope_file}.processed" || archive_rc=$?
+			if [[ $archive_rc -ne 0 ]]; then
+				log_warn "Failed to archive envelope (rc=$archive_rc); leaving original in place: $envelope_file"
+			fi
+		fi
 	done
 
 	echo "$count"

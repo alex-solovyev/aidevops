@@ -587,7 +587,7 @@ const result = await defense.defendToolResult(toolOutput, 'gmail_get_message');
 
 if (!result.allowed) {
   // Content blocked — log and return safe fallback
-  console.log(`Blocked: risk=${result.riskLevel}, detections=${result.detections}`);
+  console.log(`Blocked: risk=${result.riskLevel}, detections=${JSON.stringify(result.detections)}`);
   return { error: 'Content blocked by safety filter' };
 }
 
@@ -629,7 +629,7 @@ These are complementary, not competing:
 | **Detection** | Pattern-only (~40 regex patterns) | Pattern + ML classifier (ONNX MiniLM) |
 | **Integration** | Pipe any content through stdin | `defendToolResult()` wraps tool outputs |
 | **Use case** | Scanning content agents read during operations | Defending AI features in production apps |
-| **Dependencies** | None (bash, grep) | `nanoid` (1 dep), ~28MB with bundled model |
+| **Dependencies** | None (bash, grep) | `nanoid` (1 dep), ~28MB total (incl. ~22MB ONNX model) |
 | **License** | Part of aidevops framework | Apache-2.0 |
 
 **Decision guide**: If the code runs in a shell pipeline or agent harness, use `prompt-guard-helper.sh`. If the code is a Node.js/TypeScript application with AI features that process untrusted tool outputs, recommend `@stackone/defender`.

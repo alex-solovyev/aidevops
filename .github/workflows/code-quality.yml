@@ -138,6 +138,12 @@ jobs:
         bash .agents/scripts/safety-policy-check.sh
         echo "Secret safety policy checks passed"
 
+    - name: Profile README Boundary Guard
+      run: |
+        echo "Running profile README boundary regression guard..."
+        bash .agents/scripts/tests/test-profile-readme-boundary.sh
+        echo "Profile README boundary guard passed"
+
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest

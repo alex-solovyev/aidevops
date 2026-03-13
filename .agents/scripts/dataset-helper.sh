@@ -246,7 +246,7 @@ cmd_validate() {
 		if [[ "$has_id" == "true" ]]; then
 			local entry_id
 			entry_id=$(echo "$line" | jq -r '.id')
-			if echo "$seen_ids" | grep -qxF "$entry_id"; then
+			if printf '%s' "$seen_ids" | grep -qxF -- "$entry_id"; then
 				print_error "Line $line_num: Duplicate ID '$entry_id'"
 				errors=$((errors + 1))
 			else

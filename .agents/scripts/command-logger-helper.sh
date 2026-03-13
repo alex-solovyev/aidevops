@@ -16,7 +16,7 @@ export SCRIPT_DIR
 readonly SCRIPT_DIR
 
 # shellcheck source=/dev/null
-source "$SCRIPT_DIR/shared-constants.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/shared-constants.sh" || true
 
 readonly VERSION="1.0.0"
 
@@ -75,6 +75,7 @@ readonly -a ANOMALOUS_PATTERNS=(
 ensure_log_dir() {
 	if [[ ! -d "$COMMAND_LOG_DIR" ]]; then
 		mkdir -p "$COMMAND_LOG_DIR" || return 1
+		chmod 700 "$COMMAND_LOG_DIR" || true
 	fi
 	return 0
 }
@@ -87,11 +88,11 @@ ensure_log_dir() {
 #   0 always
 #######################################
 get_timestamp() {
-	if date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null; then
+	if date -u +"%Y-%m-%dT%H:%M:%SZ"; then
 		return 0
 	fi
 	# Fallback for systems without GNU date
-	date +"%Y-%m-%dT%H:%M:%S%z" 2>/dev/null || echo "unknown"
+	date +"%Y-%m-%dT%H:%M:%S%z" || echo "unknown"
 	return 0
 }
 
@@ -112,6 +113,9 @@ json_escape() {
 	input="${input//$'\n'/\\n}"
 	input="${input//$'\r'/\\r}"
 	input="${input//$'\t'/\\t}"
+	# Escape ESC (0x1B) and other control characters that break JSON
+	input="${input//$'\x1b'/\\u001b}"
+	input="${input//$'\x00'/}"
 	printf '%s' "$input"
 	return 0
 }
@@ -167,7 +171,7 @@ check_command() {
 		severity="${remainder%%:::*}"
 		reason="${remainder#*:::}"
 
-		if echo "$cmd" | grep -qEi "$regex" 2>/dev/null; then
+		if printf '%s' "$cmd" | grep -qEi "$regex"; then
 			escaped_reason="$(json_escape "$reason")"
 			printf '{"flagged":true,"severity":"%s","reason":"%s","pattern":"%s"}\n' \
 				"$severity" "$escaped_reason" "$(json_escape "$regex")"
@@ -222,8 +226,9 @@ show_stats() {
 	local anomaly_entries
 
 	total_entries=$(wc -l <"$COMMAND_LOG_FILE" | tr -d ' ')
-	command_entries=$(grep -c '"command"' "$COMMAND_LOG_FILE" 2>/dev/null || echo "0")
-	anomaly_entries=$(grep -c '"anomaly_flagged"' "$COMMAND_LOG_FILE" 2>/dev/null || echo "0")
+	# grep -c exits 1 on no match; capture count, default to 0 on no-match
+	command_entries=$(grep -c '"command"' "$COMMAND_LOG_FILE" || true)
+	anomaly_entries=$(grep -c '"anomaly_flagged"' "$COMMAND_LOG_FILE" || true)
 
 	echo "Command Log Statistics"
 	echo "====================="
@@ -296,26 +301,24 @@ main() {
 		esac
 	done
 
+	# Validate --cmd for actions that require it
 	case "$action" in
-	log)
+	log | check | both)
 		if [[ -z "$cmd" ]]; then
-			echo "Error: --cmd is required for log" >&2
+			echo "Error: --cmd is required for $action" >&2
 			return 1
 		fi
+		;;
+	esac
+
+	case "$action" in
+	log)
 		log_command "$cmd"
 		;;
 	check)
-		if [[ -z "$cmd" ]]; then
-			echo "Error: --cmd is required for check" >&2
-			return 1
-		fi
 		check_command "$cmd"
 		;;
 	both)
-		if [[ -z "$cmd" ]]; then
-			echo "Error: --cmd is required for both" >&2
-			return 1
-		fi
 		log_and_check "$cmd"
 		;;
 	stats)

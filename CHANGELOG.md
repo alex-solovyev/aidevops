@@ -7,6 +7,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.172.18] - 2026-03-13
+
+### Changed
+
+- Maintenance: claim t1472
+
+### Fixed
+
+- recycle stale workers during severe pulse underfill (#4353)
+
+## [2.172.17] - 2026-03-13
+
+### Changed
+
+- Maintenance: claim t1471
+
+### Fixed
+
+- adapt pulse cold-start timeout to underfill severity (#4352)
+
+## [2.172.16] - 2026-03-13
+
+### Changed
+
+- Maintenance: claim t1470
+
+### Fixed
+
+- trim pulse prefetch issue payload to avoid cold-start stalls (#4350)
+
+## [2.172.15] - 2026-03-13
+
+### Fixed
+
+- adapt stale pulse recovery timeout to underfill severity (#4348)
+
+## [2.172.14] - 2026-03-13
+
+### Changed
+
+- Maintenance: claim t1469
+
+### Fixed
+
+- auto-generate release changelog when unreleased is empty
+
+## [2.172.13] - 2026-03-13
+
+### Changed
+
+- Version bump and maintenance updates
+
+
+## [2.172.12] - 2026-03-13
+
+### Fixed
+
+- normalize active issue assignment in pulse (#4345)
+- preserve manual profile README sections during stats updates
+
+## [2.172.11] - 2026-03-13
+
+### Fixed
+
+- resolve critical quality-debt in tech-stack.md (GH#3686) (#4331)
+- replace PID file deletion with IDLE sentinel to close dedup race window (GH#4324) (#4332)
+- add explicit return 0 to all success paths in wappalyzer-helper.sh (#4333)
+- resolve critical quality-debt in wp-helper.sh (GH#3629) (#4334)
+- add trap-guarded helper for mktemp in test-pr-task-check.sh (#4329)
+- correct BigQuery HTTP Archive query to use UNNEST for technologies array (#4328)
+- address PR #1497 review feedback in todo-sync.sh (GH#3695) (#4327)
+- recycle stale pulse process when underfilled (#4326)
+
+## [2.172.10] - 2026-03-13
+
+### Changed
+
+- Refactor: extract failure message helper in test-worker-sandbox-helper.sh (#4291)
+
+### Fixed
+
+- add file existence checks in session-miner to reduce file_not_found failures (#4321)
+- harden JSON extraction in run_single_evaluator against braces in details (#4320)
+- deploy from current worktree path instead of canonical main checkout (#4319)
+- tighten pulse cold-start timeout when underfilled (#4323)
+- replace echo pipe with herestring in email-delivery-test-helper.sh
+- address CHANGES_REQUESTED review feedback on PR #4174
+- address review feedback — grep -c accuracy, font-size threshold, ANSI stripping, backslash pattern
+- prevent silent failure in secret-helper get_secret_value
+- docs consistency, portability, and minor code improvements
+- remove dead code, error suppression, and improve reliability
+- base64-encode jq values to prevent shell injection in declare (#4316)
+- replace grep|cut with while IFS= read loop for task_id parsing (#4289)
+- allow dots in routine names per coderabbit suggestion (#4292)
+- enforce browser QA vision size guardrails (#4310)
+- verify and document GH#4271 quality-debt findings in stats-wrapper.sh (#4288)
+
 ## [2.172.9] - 2026-03-13
 
 ### Fixed

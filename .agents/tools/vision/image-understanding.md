@@ -113,6 +113,8 @@ base64 -i screenshot.png | \
 
 **Image token costs**: Images are resized and tiled. A 1024x1024 image uses ~765 tokens. Larger images use more tiles. Use `detail: "low"` for cheaper analysis (~85 tokens per image).
 
+**Image size limits**: Resize behavior and maximum dimensions vary by model family and `detail` setting. Tile-based models (GPT-4o, GPT-4.1, o-series) scale the short side before tiling; patch-based models use patch/budget logic (e.g., 32×32 patches). Many models cap at ~2048 px per dimension; some support `detail: "original"` allowing up to ~6000 px. Large images increase token cost without improving accuracy. Refer to the [OpenAI vision API docs](https://platform.openai.com/docs/guides/vision) for current per-model limits and payload size constraints.
+
 ### Anthropic (Claude Vision)
 
 ```bash
@@ -136,23 +138,17 @@ curl https://api.anthropic.com/v1/messages \
 
 **Supported formats**: JPEG, PNG, GIF, WebP. Max 5MB per image (API), 10MB (Claude.ai).
 
-**Dimension limit (critical)**: Anthropic rejects base64 images where any dimension exceeds `8000px`.
-
-Recommended safety margin for screenshots:
+**Image size limits**: Images larger than 8000×8000 px are rejected (hard limit ≈ 64 megapixels). Images with a long edge exceeding 1568 px are automatically downscaled by the API. For optimal latency, Anthropic recommends resizing to ≤1.15 megapixels where width ≤1568 px and height ≤1568 px. Full-page screenshots easily exceed these bounds. The API rejects oversized images with: `At least one of the image dimensions exceed max allowed size: 8000 pixels`. Resize before submission:
 
 ```bash
-# macOS (built-in)
-sips --resampleHeightWidthMax 4000 input.png --out output.png
+# macOS (built-in, no install) — resize to 1568px max on longest side
+sips --resampleHeightWidthMax 1568 input.png --out output.png
 
-# Cross-platform (ImageMagick)
-magick input.png -resize '4000x4000>' output.png
+# Cross-platform (requires ImageMagick)
+magick input.png -resize '1568x1568>' output.png  # '>' = only shrink, never upscale
 ```
 
-The Browser QA helper enforces this by default:
-
-```bash
-browser-qa-helper.sh screenshot --url http://localhost:3000 --full-page --max-dim 4000
-```
+The 1568px target avoids the auto-downscale latency penalty while staying well within the 8000px hard limit. The `browser-qa-helper.sh` screenshot capture applies this resize automatically before submission.
 
 ### Google (Gemini Vision)
 

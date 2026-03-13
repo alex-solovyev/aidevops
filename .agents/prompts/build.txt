@@ -149,12 +149,16 @@ When referencing specific functions or code include the pattern `file_path:line_
 - markdown-formatter supports actions: format, fix, lint, check, advanced, cleanup.
 - If markdown-formatter still fails, check that .agents/scripts/markdown-formatter.sh exists and is executable.
 #
-# 3. read:file_not_found (53x observed)
+# 3. read:file_not_found (376x observed — partial fix in GH#4294)
 #    Root cause: assuming file paths from memory, AGENTS.md references, or prior
 #    sessions. Files move between releases and worktrees have different paths.
+#    Script-level fix: session-miner extract.py and compress.py now check file
+#    existence before stat()/read_text() calls; pulse script verifies compressed
+#    output exists before passing it to downstream functions.
 - Before Read: run `git ls-files '<pattern>'` or `fd -g '<pattern>'` to confirm the file exists at the expected path.
 - In worktrees: the path prefix changes (e.g., `~/Git/repo.branch-name/` not `~/Git/repo/`). Always use the worktree path.
 - AGENTS.md references like `prompts/build.txt` are relative — resolve against the actual repo root, which may be `.agents/prompts/build.txt`.
+- Before reading any file produced by a prior step (e.g., compressed output, extraction results), verify it exists with `[[ -f path ]]` (shell) or `Path.exists()` (Python) — do not assume a successful prior step always produces output.
 #
 # 4. edit:other (14x observed)
 #    Root causes: (a) identical oldString/newString (no-op), (b) permission denied
@@ -299,13 +303,27 @@ Git is the primary audit trail for all work. Every change should be discoverable
 # This is a judgment call, not a deterministic check. Read the templates and
 # contributing guidelines, then format your submission accordingly.
 - Before `gh issue create --repo <slug>` on a repo NOT in `~/.config/aidevops/repos.json`:
-  1. Check for issue templates: `gh api repos/{slug}/contents/.github/ISSUE_TEMPLATE/ --jq '.[].name'`
-  2. If templates exist, fetch the relevant one (e.g., `bug-report.yml` for bugs): `gh api repos/{slug}/contents/.github/ISSUE_TEMPLATE/bug-report.yml --jq '.content' | base64 -d`
-  3. Check for contributing guidelines: `gh api repos/{slug}/contents/CONTRIBUTING.md --jq '.content' | base64 -d`
+  1. Check for issue templates with explicit status handling (`404` means "missing", anything else fails):
+     ```bash
+     endpoint="repos/{slug}/contents/.github/ISSUE_TEMPLATE/"
+     resp=$(gh api --include "$endpoint") || { echo "gh api failed: $endpoint" >&2; exit 1; }
+     status=$(printf '%s\n' "$resp" | awk 'NR==1 {print $2}')
+     if [[ "$status" == "404" ]]; then
+       templates="[]"
+     elif [[ "$status" != "200" ]]; then
+       echo "gh api error $status: $endpoint" >&2
+       exit 1
+     else
+       body=$(printf '%s\n' "$resp" | sed '1,/^\r$/d')
+       templates=$(printf '%s\n' "$body" | jq -r '.[].name')
+     fi
+     ```
+  2. If templates exist, fetch the relevant one (e.g., `bug-report.yml`) using the same `--include` status pattern; only decode `200` bodies (`base64 -d`).
+  3. Check for `CONTRIBUTING.md` using the same `--include` status pattern; continue on `404`, fail on other non-`200` statuses.
   4. Format the issue body to match the required template structure. YAML form templates (`.yml`) generate `### Label` section headers when submitted via the web UI — replicate this structure in your `--body`.
   5. If no templates exist, use a clear, well-structured format (title, description, steps to reproduce, expected/actual behaviour).
 - Before `gh pr create` targeting an external repo:
-  1. Check for PR templates: `gh api repos/{slug}/contents/.github/PULL_REQUEST_TEMPLATE.md --jq '.content' | base64 -d`
+  1. Check for PR templates with the same `gh api --include` status parsing (`404` allowed, other non-`200` statuses fail).
   2. Check `CONTRIBUTING.md` for PR requirements (branch naming, commit format, CLA, etc.)
   3. Format the PR body to match their template and follow their contributing guidelines.
 - If a submission is auto-closed by a compliance bot, read the bot's comment for formatting requirements, then resubmit with the correct format.

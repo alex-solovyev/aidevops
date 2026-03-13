@@ -451,6 +451,19 @@ _pg_policy_threshold() {
 	return 0
 }
 
+# Sanitize untrusted text for pipe-delimited output.
+# Replaces pipe chars and newlines to prevent delimiter injection.
+_pg_sanitize_delimited() {
+	local text="$1"
+	# Replace pipes with [PIPE] marker to prevent delimiter corruption
+	text="${text//|/[PIPE]}"
+	# Replace newlines with literal \n
+	text="${text//$'\n'/\\n}"
+	# Replace carriage returns
+	text="${text//$'\r'/\\r}"
+	printf '%s' "$text"
+}
+
 # Scan patterns from a pipe-delimited source against a message
 # Args: $1=message, reads patterns from stdin (severity|category|description|pattern)
 # Output: one line per match: severity|category|description|matched_text
@@ -466,6 +479,8 @@ _pg_scan_patterns_from_stream() {
 		if _pg_match "$pattern" "$message"; then
 			local matched_text
 			matched_text=$(_pg_extract_match "$pattern" "$message") || matched_text="[match]"
+			# Sanitize matched_text to prevent pipe delimiter injection from untrusted content
+			matched_text=$(_pg_sanitize_delimited "$matched_text")
 			echo "${severity}|${category}|${description}|${matched_text}"
 			_pg_scan_found=1
 		fi
@@ -482,7 +497,7 @@ _pg_scan_message() {
 
 	# Try YAML patterns first (comprehensive), fall back to inline (core set)
 	local yaml_patterns
-	yaml_patterns=$(_pg_load_yaml_patterns 2>/dev/null) || true
+	yaml_patterns=$(_pg_load_yaml_patterns) || true
 
 	if [[ -n "$yaml_patterns" ]]; then
 		_pg_scan_patterns_from_stream "$message" <<<"$yaml_patterns"
@@ -868,36 +883,77 @@ _pg_record_session_signal() {
 	return 0
 }
 
+_pg_read_stdin_capped() {
+	if [[ -t 0 ]]; then
+		_pg_log_error "This command requires piped input, not a TTY"
+		return 1
+	fi
+
+	local max_bytes=$((10 * 1024 * 1024))
+	local tmp_file
+	tmp_file=$(mktemp) || {
+		_pg_log_error "Failed to create temp file for stdin buffering"
+		return 1
+	}
+
+	if ! head -c "$max_bytes" >"$tmp_file"; then
+		_pg_log_error "Failed to read from stdin"
+		rm -f "$tmp_file"
+		return 1
+	fi
+
+	local byte_count
+	byte_count=$(wc -c <"$tmp_file" | tr -d ' ')
+	local truncated="false"
+	if [[ "$byte_count" -ge "$max_bytes" ]]; then
+		local extra_byte
+		if IFS= read -r -n 1 extra_byte; then
+			truncated="true"
+			_pg_log_warn "Input truncated at ${max_bytes} bytes — content may be incomplete"
+		fi
+	fi
+
+	_PG_STDIN_FILE="$tmp_file"
+	_PG_STDIN_BYTES="$byte_count"
+	_PG_STDIN_TRUNCATED="$truncated"
+	return 0
+}
+
 # Scan stdin input (pipeline use)
 # Reads all of stdin, scans it, outputs findings.
 # Exit codes: 0=clean, 1=findings detected
 # Usage: curl -s https://example.com | prompt-guard-helper.sh scan-stdin
 #        cat untrusted-file.md | prompt-guard-helper.sh scan-stdin
 cmd_scan_stdin() {
-	if [[ -t 0 ]]; then
-		_pg_log_error "scan-stdin requires piped input, not a TTY. Usage: echo 'text' | prompt-guard-helper.sh scan-stdin"
+	if ! _pg_read_stdin_capped; then
 		return 1
 	fi
 
+	local tmp_file="${_PG_STDIN_FILE}"
+	local byte_count="${_PG_STDIN_BYTES}"
+	local truncated="${_PG_STDIN_TRUNCATED}"
+	# shellcheck disable=SC2064
+	trap "rm -f '$tmp_file'" RETURN
+
 	local content
-	if ! content=$(cat); then
-		_pg_log_error "Failed to read from stdin"
-		return 1
-	fi
+	content=$(<"$tmp_file")
 
 	if [[ -z "$content" ]]; then
 		_pg_log_error "No content received on stdin"
 		return 1
 	fi
 
-	local byte_count
-	byte_count=$(printf '%s' "$content" | wc -c | tr -d ' ')
 	_pg_log_info "Scanning stdin content ($byte_count bytes)"
 
 	local results
 	results=$(_pg_scan_message "$content") || true
 
 	if [[ -z "$results" ]]; then
+		if [[ "$truncated" == "true" ]]; then
+			_pg_log_warn "No patterns detected, but input was truncated — scan may be incomplete"
+			echo "TRUNCATED"
+			return 2
+		fi
 		_pg_log_success "No injection patterns detected in stdin content"
 		echo "CLEAN"
 		return 0
@@ -1817,20 +1873,40 @@ main() {
 		cmd_sanitize "$content"
 		;;
 	check-stdin)
+		if ! _pg_read_stdin_capped; then
+			return 1
+		fi
+		local tmp_file="${_PG_STDIN_FILE}"
+		local truncated="${_PG_STDIN_TRUNCATED}"
+		# shellcheck disable=SC2064
+		trap "rm -f '$tmp_file'" RETURN
 		local content
-		content=$(cat)
+		content=$(<"$tmp_file")
 		if [[ -z "$content" ]]; then
 			_pg_log_error "No input received on stdin"
 			return 1
 		fi
+		if [[ "$truncated" == "true" ]]; then
+			_pg_log_warn "check-stdin input was truncated; result may be incomplete"
+		fi
 		cmd_check "$content"
 		;;
 	sanitize-stdin)
+		if ! _pg_read_stdin_capped; then
+			return 1
+		fi
+		local tmp_file="${_PG_STDIN_FILE}"
+		local truncated="${_PG_STDIN_TRUNCATED}"
+		# shellcheck disable=SC2064
+		trap "rm -f '$tmp_file'" RETURN
 		local content
-		content=$(cat)
+		content=$(<"$tmp_file")
 		if [[ -z "$content" ]]; then
 			_pg_log_error "No input received on stdin"
 			return 1
+		fi
+		if [[ "$truncated" == "true" ]]; then
+			_pg_log_warn "sanitize-stdin input was truncated; output may be incomplete"
 		fi
 		cmd_sanitize "$content"
 		;;

@@ -31,6 +31,13 @@
 # check_dedup() serves as a tertiary safety net for edge cases where the
 # wrapper itself gets stuck.
 #
+# PID file sentinel protocol (GH#4324):
+#   The PID file is NEVER deleted at run end. Instead it is overwritten with
+#   an "IDLE:<timestamp>" sentinel. check_dedup() treats any content that is
+#   not a live numeric PID as "safe to proceed". This closes the race window
+#   where launchd fires between rm -f and the next write, which caused the
+#   82-concurrent-pulse incident (2026-03-13T02:06:01Z, issue #4318).
+#
 # Called by launchd every 120s via the supervisor-pulse plist.
 
 set -euo pipefail
@@ -77,6 +84,8 @@ PULSE_IDLE_TIMEOUT="${PULSE_IDLE_TIMEOUT:-600}"                                 
 PULSE_IDLE_CPU_THRESHOLD="${PULSE_IDLE_CPU_THRESHOLD:-5}"                                               # CPU% below this = idle (0-100 scale)
 PULSE_PROGRESS_TIMEOUT="${PULSE_PROGRESS_TIMEOUT:-600}"                                                 # 10 min no log output = stuck (GH#2958)
 PULSE_COLD_START_TIMEOUT="${PULSE_COLD_START_TIMEOUT:-1200}"                                            # 20 min grace before first output (prevents false early watchdog kills)
+PULSE_COLD_START_TIMEOUT_UNDERFILLED="${PULSE_COLD_START_TIMEOUT_UNDERFILLED:-600}"                     # 10 min grace when below worker target to recover capacity faster
+PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT="${PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT:-900}"             # 15 min stale-process cutoff when worker pool is underfilled
 ORPHAN_MAX_AGE="${ORPHAN_MAX_AGE:-7200}"                                                                # 2 hours — kill orphans older than this
 RAM_PER_WORKER_MB="${RAM_PER_WORKER_MB:-1024}"                                                          # 1 GB per worker
 RAM_RESERVE_MB="${RAM_RESERVE_MB:-8192}"                                                                # 8 GB reserved for OS + user apps
@@ -88,10 +97,11 @@ PULSE_BACKFILL_MAX_ATTEMPTS="${PULSE_BACKFILL_MAX_ATTEMPTS:-3}"                 
 PULSE_LAUNCH_GRACE_SECONDS="${PULSE_LAUNCH_GRACE_SECONDS:-20}"                                          # Grace window for worker process to appear after dispatch (t1453)
 PRE_RUN_STAGE_TIMEOUT="${PRE_RUN_STAGE_TIMEOUT:-600}"                                                   # 10 min cap per pre-run stage (cleanup/prefetch)
 PULSE_PREFETCH_PR_LIMIT="${PULSE_PREFETCH_PR_LIMIT:-200}"                                               # Open PR list window per repo for pre-fetched state
-PULSE_PREFETCH_ISSUE_LIMIT="${PULSE_PREFETCH_ISSUE_LIMIT:-200}"                                         # Open issue list window per repo for pre-fetched state
+PULSE_PREFETCH_ISSUE_LIMIT="${PULSE_PREFETCH_ISSUE_LIMIT:-200}"                                         # Open issue list window for pulse prompt payload (keep compact)
 PULSE_RUNNABLE_PR_LIMIT="${PULSE_RUNNABLE_PR_LIMIT:-200}"                                               # Open PR sample size for runnable-candidate counting
-PULSE_RUNNABLE_ISSUE_LIMIT="${PULSE_RUNNABLE_ISSUE_LIMIT:-200}"                                         # Open issue sample size for runnable-candidate counting
-PULSE_QUEUED_SCAN_LIMIT="${PULSE_QUEUED_SCAN_LIMIT:-200}"                                               # Queued-issue scan window per repo
+PULSE_RUNNABLE_ISSUE_LIMIT="${PULSE_RUNNABLE_ISSUE_LIMIT:-1000}"                                        # Open issue sample size for runnable-candidate counting
+PULSE_QUEUED_SCAN_LIMIT="${PULSE_QUEUED_SCAN_LIMIT:-1000}"                                              # Queued/in-progress scan window per repo
+UNDERFILL_RECYCLE_DEFICIT_MIN_PCT="${UNDERFILL_RECYCLE_DEFICIT_MIN_PCT:-25}"                            # Run worker recycler when underfill reaches this threshold
 
 # Process guard limits (t1398)
 CHILD_RSS_LIMIT_KB="${CHILD_RSS_LIMIT_KB:-2097152}"           # 2 GB default — kill child if RSS exceeds this
@@ -106,6 +116,8 @@ PULSE_IDLE_TIMEOUT=$(_validate_int PULSE_IDLE_TIMEOUT "$PULSE_IDLE_TIMEOUT" 300 
 PULSE_IDLE_CPU_THRESHOLD=$(_validate_int PULSE_IDLE_CPU_THRESHOLD "$PULSE_IDLE_CPU_THRESHOLD" 5)
 PULSE_PROGRESS_TIMEOUT=$(_validate_int PULSE_PROGRESS_TIMEOUT "$PULSE_PROGRESS_TIMEOUT" 600 120)
 PULSE_COLD_START_TIMEOUT=$(_validate_int PULSE_COLD_START_TIMEOUT "$PULSE_COLD_START_TIMEOUT" 1200 300)
+PULSE_COLD_START_TIMEOUT_UNDERFILLED=$(_validate_int PULSE_COLD_START_TIMEOUT_UNDERFILLED "$PULSE_COLD_START_TIMEOUT_UNDERFILLED" 600 120)
+PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT=$(_validate_int PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT "$PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT" 900 300)
 ORPHAN_MAX_AGE=$(_validate_int ORPHAN_MAX_AGE "$ORPHAN_MAX_AGE" 7200)
 RAM_PER_WORKER_MB=$(_validate_int RAM_PER_WORKER_MB "$RAM_PER_WORKER_MB" 1024 1)
 RAM_RESERVE_MB=$(_validate_int RAM_RESERVE_MB "$RAM_RESERVE_MB" 8192)
@@ -122,8 +134,12 @@ PRE_RUN_STAGE_TIMEOUT=$(_validate_int PRE_RUN_STAGE_TIMEOUT "$PRE_RUN_STAGE_TIME
 PULSE_PREFETCH_PR_LIMIT=$(_validate_int PULSE_PREFETCH_PR_LIMIT "$PULSE_PREFETCH_PR_LIMIT" 200 1)
 PULSE_PREFETCH_ISSUE_LIMIT=$(_validate_int PULSE_PREFETCH_ISSUE_LIMIT "$PULSE_PREFETCH_ISSUE_LIMIT" 200 1)
 PULSE_RUNNABLE_PR_LIMIT=$(_validate_int PULSE_RUNNABLE_PR_LIMIT "$PULSE_RUNNABLE_PR_LIMIT" 200 1)
-PULSE_RUNNABLE_ISSUE_LIMIT=$(_validate_int PULSE_RUNNABLE_ISSUE_LIMIT "$PULSE_RUNNABLE_ISSUE_LIMIT" 200 1)
-PULSE_QUEUED_SCAN_LIMIT=$(_validate_int PULSE_QUEUED_SCAN_LIMIT "$PULSE_QUEUED_SCAN_LIMIT" 200 1)
+PULSE_RUNNABLE_ISSUE_LIMIT=$(_validate_int PULSE_RUNNABLE_ISSUE_LIMIT "$PULSE_RUNNABLE_ISSUE_LIMIT" 1000 1)
+PULSE_QUEUED_SCAN_LIMIT=$(_validate_int PULSE_QUEUED_SCAN_LIMIT "$PULSE_QUEUED_SCAN_LIMIT" 1000 1)
+UNDERFILL_RECYCLE_DEFICIT_MIN_PCT=$(_validate_int UNDERFILL_RECYCLE_DEFICIT_MIN_PCT "$UNDERFILL_RECYCLE_DEFICIT_MIN_PCT" 25 1)
+if [[ "$UNDERFILL_RECYCLE_DEFICIT_MIN_PCT" -gt 100 ]]; then
+	UNDERFILL_RECYCLE_DEFICIT_MIN_PCT=100
+fi
 CHILD_RSS_LIMIT_KB=$(_validate_int CHILD_RSS_LIMIT_KB "$CHILD_RSS_LIMIT_KB" 2097152 1)
 CHILD_RUNTIME_LIMIT=$(_validate_int CHILD_RUNTIME_LIMIT "$CHILD_RUNTIME_LIMIT" 1800 1)
 SHELLCHECK_RSS_LIMIT_KB=$(_validate_int SHELLCHECK_RSS_LIMIT_KB "$SHELLCHECK_RSS_LIMIT_KB" 1048576 1)
@@ -145,6 +161,7 @@ REPOS_JSON="${REPOS_JSON:-${HOME}/.config/aidevops/repos.json}"
 STATE_FILE="${HOME}/.aidevops/logs/pulse-state.txt"
 QUEUE_METRICS_FILE="${HOME}/.aidevops/logs/pulse-queue-metrics"
 SCOPE_FILE="${HOME}/.aidevops/logs/pulse-scope-repos"
+WORKER_WATCHDOG_HELPER="${SCRIPT_DIR}/worker-watchdog.sh"
 
 if [[ ! -x "$HEADLESS_RUNTIME_HELPER" ]]; then
 	printf '[pulse-wrapper] ERROR: headless runtime helper is missing or not executable: %s (SCRIPT_DIR=%s)\n' "$HEADLESS_RUNTIME_HELPER" "$SCRIPT_DIR" >&2
@@ -159,6 +176,12 @@ mkdir -p "$(dirname "$PIDFILE")"
 #######################################
 # Check for stale PID file and clean up
 # Returns: 0 if safe to proceed, 1 if another pulse is genuinely running
+#
+# PID file sentinel protocol (GH#4324):
+#   The PID file is never deleted — only overwritten. Valid states:
+#     <numeric PID>  — a pulse may be running; verify with ps
+#     IDLE:<ts>      — last run completed normally; safe to proceed
+#     empty / other  — treat as safe to proceed (first run or corrupt)
 #######################################
 check_dedup() {
 	if [[ ! -f "$PIDFILE" ]]; then
@@ -168,15 +191,21 @@ check_dedup() {
 	local old_pid
 	old_pid=$(cat "$PIDFILE" 2>/dev/null || echo "")
 
-	if [[ -z "$old_pid" ]]; then
-		rm -f "$PIDFILE"
+	# Empty file or IDLE sentinel — safe to proceed (GH#4324)
+	if [[ -z "$old_pid" ]] || [[ "$old_pid" == IDLE:* ]]; then
+		return 0
+	fi
+
+	# Non-numeric content (corrupt/unknown) — safe to proceed
+	if ! [[ "$old_pid" =~ ^[0-9]+$ ]]; then
+		echo "[pulse-wrapper] check_dedup: unrecognised PID file content '${old_pid}' — treating as idle" >>"$LOGFILE"
 		return 0
 	fi
 
 	# Check if the process is still running
-	if ! ps -p "$old_pid" >/dev/null; then
-		# Process is dead, clean up stale PID file
-		rm -f "$PIDFILE"
+	if ! ps -p "$old_pid" >/dev/null 2>&1; then
+		# Process is dead — write IDLE sentinel so the file is never absent
+		echo "IDLE:$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$PIDFILE"
 		return 0
 	fi
 
@@ -192,6 +221,40 @@ check_dedup() {
 		_kill_tree "$old_pid" || true
 		sleep 2
 		# Force kill if still alive
+		if kill -0 "$old_pid" 2>/dev/null; then
+			_force_kill_tree "$old_pid" || true
+		fi
+		# Write IDLE sentinel — never leave the file absent (GH#4324)
+		echo "IDLE:$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$PIDFILE"
+		return 0
+	fi
+
+	# Underfilled stale recovery: if the pulse process has been running long
+	# enough and worker pool is below target, recycle now instead of waiting
+	# for the full stale threshold. Adapt timeout by underfill severity to
+	# recover capacity faster during deep underfill while keeping tolerance
+	# for minor underfill blips.
+	local max_workers active_workers deficit_pct adaptive_timeout
+	max_workers=$(get_max_workers_target)
+	active_workers=$(count_active_workers)
+	[[ "$max_workers" =~ ^[0-9]+$ ]] || max_workers=1
+	[[ "$active_workers" =~ ^[0-9]+$ ]] || active_workers=0
+	deficit_pct=0
+	adaptive_timeout="$PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT"
+
+	if [[ "$active_workers" -lt "$max_workers" ]]; then
+		deficit_pct=$(((max_workers - active_workers) * 100 / max_workers))
+		if [[ "$deficit_pct" -ge 50 ]]; then
+			adaptive_timeout=300
+		elif [[ "$deficit_pct" -ge 25 ]]; then
+			adaptive_timeout=450
+		fi
+	fi
+
+	if [[ "$elapsed_seconds" -gt "$adaptive_timeout" && "$active_workers" -lt "$max_workers" ]]; then
+		echo "[pulse-wrapper] Recycling stale pulse process $old_pid early (running ${elapsed_seconds}s, underfilled ${active_workers}/${max_workers} [${deficit_pct}%], threshold ${adaptive_timeout}s)" >>"$LOGFILE"
+		_kill_tree "$old_pid" || true
+		sleep 2
 		if kill -0 "$old_pid" 2>/dev/null; then
 			_force_kill_tree "$old_pid" || true
 		fi
@@ -1367,9 +1430,26 @@ run_stage_with_timeout() {
 # internal to the same process that spawned opencode.
 #######################################
 run_pulse() {
+	local underfilled_mode="${1:-0}"
+	local underfill_pct="${2:-0}"
+	local effective_cold_start_timeout="$PULSE_COLD_START_TIMEOUT"
+	if [[ "$underfilled_mode" == "1" ]]; then
+		effective_cold_start_timeout="$PULSE_COLD_START_TIMEOUT_UNDERFILLED"
+		[[ "$underfill_pct" =~ ^[0-9]+$ ]] || underfill_pct=0
+		if [[ "$underfill_pct" -ge 50 ]]; then
+			effective_cold_start_timeout=300
+		elif [[ "$underfill_pct" -ge 25 ]]; then
+			effective_cold_start_timeout=450
+		fi
+	fi
+	if [[ "$effective_cold_start_timeout" -gt "$PULSE_COLD_START_TIMEOUT" ]]; then
+		effective_cold_start_timeout="$PULSE_COLD_START_TIMEOUT"
+	fi
+
 	local start_epoch
 	start_epoch=$(date +%s)
 	echo "[pulse-wrapper] Starting pulse at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$WRAPPER_LOGFILE"
+	echo "[pulse-wrapper] Watchdog cold-start timeout: ${effective_cold_start_timeout}s (underfilled_mode=${underfilled_mode}, underfill_pct=${underfill_pct})" >>"$LOGFILE"
 
 	# Build the prompt: /pulse + reference to pre-fetched state file.
 	# The state is NOT inlined into the prompt — on Linux, execve() enforces
@@ -1467,11 +1547,11 @@ gathered by pulse-wrapper.sh BEFORE this session started."
 					progress_stall_seconds=$((progress_stall_seconds + 60))
 					local progress_timeout="$PULSE_PROGRESS_TIMEOUT"
 					if [[ "$has_seen_progress" == false ]]; then
-						progress_timeout="$PULSE_COLD_START_TIMEOUT"
+						progress_timeout="$effective_cold_start_timeout"
 					fi
 					if [[ "$progress_stall_seconds" -ge "$progress_timeout" ]]; then
 						if [[ "$has_seen_progress" == false ]]; then
-							kill_reason="Pulse cold-start stalled for ${progress_stall_seconds}s — no first output (log size: ${current_log_size} bytes, threshold: ${PULSE_COLD_START_TIMEOUT}s)"
+							kill_reason="Pulse cold-start stalled for ${progress_stall_seconds}s — no first output (log size: ${current_log_size} bytes, threshold: ${effective_cold_start_timeout}s)"
 						else
 							kill_reason="Pulse stalled for ${progress_stall_seconds}s — no log output (log size: ${current_log_size} bytes, threshold: ${PULSE_PROGRESS_TIMEOUT}s) (GH#2958)"
 						fi
@@ -1529,8 +1609,11 @@ gathered by pulse-wrapper.sh BEFORE this session started."
 	# Reap the process (may already be dead)
 	wait "$opencode_pid" 2>/dev/null || true
 
-	# Clean up PID file
-	rm -f "$PIDFILE"
+	# Write IDLE sentinel — never delete the PID file (GH#4324).
+	# Deleting creates a race window where launchd can start multiple
+	# concurrent pulses before the next run writes its PID. The sentinel
+	# keeps the file present so check_dedup() always has a state to read.
+	echo "IDLE:$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$PIDFILE"
 
 	local end_epoch
 	end_epoch=$(date +%s)
@@ -1778,12 +1861,74 @@ prefetch_contribution_watch() {
 }
 
 #######################################
+# Ensure active issues have an assignee
+#
+# Prevent overlap by normalizing assignment on issues already marked as
+# actively worked (`status:queued` or `status:in-progress`). If an issue
+# has one of these labels but no assignee, assign it to the runner user.
+#
+# Returns: 0 always (best-effort)
+#######################################
+normalize_active_issue_assignments() {
+	local repos_json="$REPOS_JSON"
+	if [[ ! -f "$repos_json" ]]; then
+		return 0
+	fi
+
+	local runner_user
+	runner_user=$(gh api user --jq '.login' 2>/dev/null || echo "")
+	if [[ -z "$runner_user" ]]; then
+		echo "[pulse-wrapper] Assignment normalization skipped: unable to resolve runner user" >>"$LOGFILE"
+		return 0
+	fi
+
+	local total_checked=0
+	local total_assigned=0
+
+	while IFS= read -r slug; do
+		[[ -n "$slug" ]] || continue
+
+		local issue_rows
+		issue_rows=$(gh issue list --repo "$slug" --state open --json number,assignees,labels --limit "$PULSE_QUEUED_SCAN_LIMIT" 2>/dev/null | jq -r '.[] | select(((.labels | map(.name) | index("status:queued")) or (.labels | map(.name) | index("status:in-progress"))) and ((.assignees | length) == 0)) | .number' 2>/dev/null) || issue_rows=""
+		if [[ -z "$issue_rows" ]]; then
+			continue
+		fi
+
+		while IFS= read -r issue_number; do
+			[[ "$issue_number" =~ ^[0-9]+$ ]] || continue
+			total_checked=$((total_checked + 1))
+			if gh issue edit "$issue_number" --repo "$slug" --add-assignee "$runner_user" >/dev/null 2>&1; then
+				total_assigned=$((total_assigned + 1))
+			fi
+		done <<<"$issue_rows"
+	done < <(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null)
+
+	if [[ "$total_checked" -gt 0 ]]; then
+		echo "[pulse-wrapper] Assignment normalization: assigned ${total_assigned}/${total_checked} active unassigned issues to ${runner_user}" >>"$LOGFILE"
+	fi
+
+	return 0
+}
+
+#######################################
 # Count active worker processes
 # Returns: count via stdout
 #######################################
 count_active_workers() {
 	local count
-	count=$(ps axo command | grep '\.opencode run' | grep '/full-loop' | grep -v '/pulse' | grep -v 'Supervisor Pulse' | grep -c -v grep) || count=0
+	count=$(ps axo command | awk '
+		index($0, ".opencode run") > 0 &&
+		index($0, "/full-loop") > 0 &&
+		!(
+			$0 ~ /(^|[[:space:]])--role([=[:space:]])pulse([[:space:]]|$)/ &&
+			$0 ~ /(^|[[:space:]])--session-key([=[:space:]])supervisor-pulse([[:space:]]|$)/
+		) {
+			count++
+		}
+		END {
+			print count + 0
+		}
+	') || count=0
 	echo "$count"
 	return 0
 }
@@ -2144,6 +2289,10 @@ enforce_utilization_invariants() {
 		[[ "$runnable_count" =~ ^[0-9]+$ ]] || runnable_count=0
 		[[ "$queued_without_worker" =~ ^[0-9]+$ ]] || queued_without_worker=0
 
+		run_underfill_worker_recycler "$max_workers" "$active_workers" "$runnable_count" "$queued_without_worker"
+		active_workers=$(count_active_workers)
+		[[ "$active_workers" =~ ^[0-9]+$ ]] || active_workers=0
+
 		if [[ "$active_workers" -ge "$max_workers" && "$queued_without_worker" -eq 0 ]]; then
 			echo "[pulse-wrapper] Utilization invariant satisfied: active workers ${active_workers}/${max_workers}" >>"$LOGFILE"
 			return 0
@@ -2159,10 +2308,91 @@ enforce_utilization_invariants() {
 
 		# Refresh prompt state before each backfill cycle so pulse sees latest context.
 		prefetch_state || true
-		run_pulse
+		local underfilled_mode=0
+		local underfill_pct=0
+		if [[ "$active_workers" -lt "$max_workers" ]]; then
+			underfilled_mode=1
+			underfill_pct=$(((max_workers - active_workers) * 100 / max_workers))
+		fi
+		run_pulse "$underfilled_mode" "$underfill_pct"
 	done
 
 	echo "[pulse-wrapper] Reached backfill attempt cap (${max_attempts}) before utilization invariant converged" >>"$LOGFILE"
+	return 0
+}
+
+#######################################
+# Recycle stale workers aggressively when underfill is severe
+#
+# During deep underfill, long-running workers can occupy slots while making
+# no mergeable progress. Run worker-watchdog with stricter thresholds so
+# stale workers are recycled before the next pulse dispatch attempt.
+#
+# Arguments:
+#   $1 - max workers
+#   $2 - active workers
+#   $3 - runnable candidate count
+#   $4 - queued_without_worker count
+#######################################
+run_underfill_worker_recycler() {
+	local max_workers="$1"
+	local active_workers="$2"
+	local runnable_count="$3"
+	local queued_without_worker="$4"
+
+	[[ "$max_workers" =~ ^[0-9]+$ ]] || max_workers=1
+	[[ "$active_workers" =~ ^[0-9]+$ ]] || active_workers=0
+	[[ "$runnable_count" =~ ^[0-9]+$ ]] || runnable_count=0
+	[[ "$queued_without_worker" =~ ^[0-9]+$ ]] || queued_without_worker=0
+
+	if [[ "$active_workers" -ge "$max_workers" ]]; then
+		return 0
+	fi
+
+	if [[ "$runnable_count" -eq 0 && "$queued_without_worker" -eq 0 ]]; then
+		return 0
+	fi
+
+	if [[ ! -x "$WORKER_WATCHDOG_HELPER" ]]; then
+		echo "[pulse-wrapper] Underfill recycler skipped: worker-watchdog helper missing or not executable (${WORKER_WATCHDOG_HELPER})" >>"$LOGFILE"
+		return 0
+	fi
+
+	local deficit_pct
+	deficit_pct=$(((max_workers - active_workers) * 100 / max_workers))
+	if [[ "$deficit_pct" -lt "$UNDERFILL_RECYCLE_DEFICIT_MIN_PCT" ]]; then
+		return 0
+	fi
+
+	local thrash_elapsed_threshold
+	local thrash_message_threshold
+	local progress_timeout
+	local max_runtime
+	if [[ "$deficit_pct" -ge 50 ]]; then
+		thrash_elapsed_threshold=1800
+		thrash_message_threshold=90
+		progress_timeout=420
+		max_runtime=7200
+	else
+		thrash_elapsed_threshold=3600
+		thrash_message_threshold=120
+		progress_timeout=480
+		max_runtime=9000
+	fi
+
+	echo "[pulse-wrapper] Underfill recycler: running worker-watchdog (active ${active_workers}/${max_workers}, deficit ${deficit_pct}%, runnable=${runnable_count}, queued_without_worker=${queued_without_worker})" >>"$LOGFILE"
+
+	if WORKER_WATCHDOG_NOTIFY=false \
+		WORKER_THRASH_ELAPSED_THRESHOLD="$thrash_elapsed_threshold" \
+		WORKER_THRASH_MESSAGE_THRESHOLD="$thrash_message_threshold" \
+		WORKER_PROGRESS_TIMEOUT="$progress_timeout" \
+		WORKER_MAX_RUNTIME="$max_runtime" \
+		"$WORKER_WATCHDOG_HELPER" --check >>"$LOGFILE" 2>&1; then
+		echo "[pulse-wrapper] Underfill recycler complete: worker-watchdog check finished" >>"$LOGFILE"
+	else
+		echo "[pulse-wrapper] Underfill recycler warning: worker-watchdog returned non-zero" >>"$LOGFILE"
+	fi
+
 	return 0
 }
 
@@ -2207,9 +2437,13 @@ main() {
 	# comment bodies. Output appended to STATE_FILE for the pulse agent.
 	prefetch_contribution_watch
 
+	# Ensure active labels reflect ownership to prevent multi-worker overlap.
+	run_stage_with_timeout "normalize_active_issue_assignments" "$PRE_RUN_STAGE_TIMEOUT" normalize_active_issue_assignments || true
+
 	if ! run_stage_with_timeout "prefetch_state" "$PRE_RUN_STAGE_TIMEOUT" prefetch_state; then
 		echo "[pulse-wrapper] prefetch_state did not complete successfully — aborting this cycle to avoid stale dispatch decisions" >>"$LOGFILE"
-		rm -f "$PIDFILE"
+		# Write IDLE sentinel — never delete the PID file (GH#4324)
+		echo "IDLE:$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$PIDFILE"
 		return 0
 	fi
 
@@ -2229,7 +2463,34 @@ main() {
 		return 0
 	fi
 
-	run_pulse
+	local initial_max_workers initial_active_workers initial_underfilled_mode
+	initial_max_workers=$(get_max_workers_target)
+	initial_active_workers=$(count_active_workers)
+	[[ "$initial_max_workers" =~ ^[0-9]+$ ]] || initial_max_workers=1
+	[[ "$initial_active_workers" =~ ^[0-9]+$ ]] || initial_active_workers=0
+	initial_underfilled_mode=0
+	local initial_underfill_pct=0
+	if [[ "$initial_active_workers" -lt "$initial_max_workers" ]]; then
+		initial_underfilled_mode=1
+		initial_underfill_pct=$(((initial_max_workers - initial_active_workers) * 100 / initial_max_workers))
+	fi
+	local initial_runnable_count initial_queued_without_worker
+	initial_runnable_count=$(count_runnable_candidates)
+	initial_queued_without_worker=$(count_queued_without_worker)
+	[[ "$initial_runnable_count" =~ ^[0-9]+$ ]] || initial_runnable_count=0
+	[[ "$initial_queued_without_worker" =~ ^[0-9]+$ ]] || initial_queued_without_worker=0
+	run_underfill_worker_recycler "$initial_max_workers" "$initial_active_workers" "$initial_runnable_count" "$initial_queued_without_worker"
+	initial_active_workers=$(count_active_workers)
+	[[ "$initial_active_workers" =~ ^[0-9]+$ ]] || initial_active_workers=0
+	if [[ "$initial_active_workers" -lt "$initial_max_workers" ]]; then
+		initial_underfilled_mode=1
+		initial_underfill_pct=$(((initial_max_workers - initial_active_workers) * 100 / initial_max_workers))
+	else
+		initial_underfilled_mode=0
+		initial_underfill_pct=0
+	fi
+
+	run_pulse "$initial_underfilled_mode" "$initial_underfill_pct"
 	enforce_utilization_invariants
 	return 0
 }

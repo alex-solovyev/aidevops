@@ -229,17 +229,17 @@ When filing issues or PRs on repos you don't maintain, many repos enforce templa
 ### Discovering Issue Templates
 
 ```bash
-# List available issue templates
-gh api repos/{owner}/{repo}/contents/.github/ISSUE_TEMPLATE/ --jq '.[].name'
+# List available issue templates (|| true: repo may not have templates)
+gh api repos/{owner}/{repo}/contents/.github/ISSUE_TEMPLATE/ --jq '.[].name' || true
 # Example output: bug-report.yml  feature-request.yml  config.yml
 
 # Read a specific template (YAML form)
 gh api repos/{owner}/{repo}/contents/.github/ISSUE_TEMPLATE/bug-report.yml \
-  --jq '.content' | base64 -d
+  --jq '.content' | base64 -d || true
 
 # Check for CONTRIBUTING.md
 gh api repos/{owner}/{repo}/contents/CONTRIBUTING.md \
-  --jq '.content' | base64 -d
+  --jq '.content' | base64 -d || true
 ```
 
 ### Mapping YAML Form Templates to Markdown
@@ -310,13 +310,13 @@ v2.4.1
 ### Discovering PR Templates
 
 ```bash
-# Check for PR template
+# Check for PR template (|| true: repo may not have one)
 gh api repos/{owner}/{repo}/contents/.github/PULL_REQUEST_TEMPLATE.md \
-  --jq '.content' | base64 -d
+  --jq '.content' | base64 -d || true
 
 # Some repos use a directory of templates
 gh api repos/{owner}/{repo}/contents/.github/PULL_REQUEST_TEMPLATE/ \
-  --jq '.[].name'
+  --jq '.[].name' || true
 ```
 
 ### Handling Auto-Close Bots

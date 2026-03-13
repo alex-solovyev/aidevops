@@ -34,7 +34,7 @@ get_repo() {
 	local repo
 	repo="${GITHUB_REPOSITORY:-}"
 	if [[ -z "$repo" ]]; then
-		repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || {
+		repo=$(gh repo view --json nameWithOwner -q .nameWithOwner) || {
 			echo "Error: Not in a GitHub repository or gh CLI not configured" >&2
 			exit 1
 		}
@@ -52,6 +52,202 @@ get_sha() {
 		git rev-parse HEAD
 	fi
 	return 0
+}
+
+# Resolve default branch for repo (cached per process)
+_QF_DEFAULT_BRANCH=""
+_QF_DEFAULT_BRANCH_REPO=""
+
+_get_default_branch() {
+	local repo_slug="$1"
+
+	if [[ -n "$_QF_DEFAULT_BRANCH" && "$_QF_DEFAULT_BRANCH_REPO" == "$repo_slug" ]]; then
+		echo "$_QF_DEFAULT_BRANCH"
+		return 0
+	fi
+
+	local branch
+	branch=$(gh api "repos/${repo_slug}" --jq '.default_branch' 2>/dev/null || echo "main")
+	if [[ -z "$branch" || "$branch" == "null" ]]; then
+		branch="main"
+	fi
+
+	_QF_DEFAULT_BRANCH="$branch"
+	_QF_DEFAULT_BRANCH_REPO="$repo_slug"
+	echo "$branch"
+	return 0
+}
+
+_trim_whitespace() {
+	local text="$1"
+	text="${text#"${text%%[![:space:]]*}"}"
+	text="${text%"${text##*[![:space:]]}"}"
+	echo "$text"
+	return 0
+}
+
+_extract_verification_snippet() {
+	local body_full="$1"
+	local line=""
+	local in_fence="false"
+	local fence_type=""
+	local candidate=""
+
+	while IFS= read -r line; do
+		if [[ "$line" =~ ^\`\`\` ]]; then
+			if [[ "$in_fence" == "false" ]]; then
+				in_fence="true"
+				fence_type=""
+				if [[ "$line" =~ ^\`\`\`([[:alnum:]_-]+) ]]; then
+					fence_type="${BASH_REMATCH[1],,}"
+				fi
+				continue
+			fi
+			break
+		fi
+
+		if [[ "$in_fence" == "true" ]]; then
+			candidate=$(_trim_whitespace "$line")
+			[[ -z "$candidate" ]] && continue
+
+			if [[ "$fence_type" == "diff" || "$fence_type" == "suggestion" ]]; then
+				# diff/suggestion fences: skip all diff markers and added/removed lines
+				[[ "$candidate" == "@@"* ]] && continue
+				[[ "$candidate" == "diff --git"* ]] && continue
+				[[ "$candidate" == "index "* ]] && continue
+				[[ "$candidate" == "+++"* ]] && continue
+				[[ "$candidate" == "---"* ]] && continue
+				[[ "$candidate" == +* ]] && continue
+				[[ "$candidate" == -* ]] && continue
+			else
+				# non-diff fences: lines starting with +/- are diff markers too —
+				# skip them rather than stripping the prefix and using the content
+				[[ "$candidate" == +* ]] && continue
+				[[ "$candidate" == -* ]] && continue
+			fi
+
+			[[ "$candidate" == "Suggestion:"* ]] && continue
+			[[ "$candidate" == "//"* ]] && continue
+			[[ "$candidate" == "# "* ]] && continue
+			[[ "$candidate" == "/*"* ]] && continue
+			[[ "$candidate" == "*"* ]] && continue
+
+			if [[ -n "$candidate" && ${#candidate} -ge 12 ]]; then
+				echo "$candidate"
+				return 0
+			fi
+		fi
+	done <<<"$body_full"
+
+	while IFS= read -r line; do
+		case "$line" in
+		'> '*)
+			line="${line#> }"
+			;;
+		'    '* | '	'*)
+			# indented code block (4 spaces or tab)
+			line="${line#    }"
+			line="${line#	}"
+			;;
+		'`'*)
+			# inline backtick code — strip surrounding backticks
+			line="${line//\`/}"
+			;;
+		*)
+			continue
+			;;
+		esac
+		line=$(_trim_whitespace "$line")
+		if [[ -n "$line" && ${#line} -ge 12 ]]; then
+			echo "$line"
+			return 0
+		fi
+	done <<<"$body_full"
+
+	return 1
+}
+
+_finding_still_exists_on_main() {
+	local repo_slug="$1"
+	local file_path="$2"
+	local line_num="$3"
+	local body_full="$4"
+
+	if [[ -z "$file_path" || "$file_path" == "null" ]]; then
+		echo '{"result":true,"status":"unverifiable"}'
+		return 0
+	fi
+
+	local default_branch
+	default_branch=$(_get_default_branch "$repo_slug")
+
+	local file_content
+	local api_err
+	api_err="$(mktemp)"
+	if ! file_content=$(gh api -H "Accept: application/vnd.github.raw" \
+		"repos/${repo_slug}/contents/${file_path}?ref=${default_branch}" 2>"$api_err"); then
+		if grep -q "404" "$api_err"; then
+			echo "[scan] Skipping resolved finding: ${file_path}:${line_num} - file missing on ${default_branch}" >&2
+			rm -f "$api_err"
+			echo '{"result":false,"status":"resolved"}'
+			return 1
+		fi
+		echo "[scan] Keeping unverifiable finding: ${file_path}:${line_num} - failed to fetch ${default_branch}" >&2
+		rm -f "$api_err"
+		echo '{"result":true,"status":"unverifiable"}'
+		return 0
+	fi
+	rm -f "$api_err"
+
+	if [[ -z "$file_content" ]]; then
+		echo "[scan] Skipping resolved finding: ${file_path}:${line_num} - file missing on ${default_branch}" >&2
+		echo '{"result":false,"status":"resolved"}'
+		return 1
+	fi
+
+	local snippet
+	if ! snippet=$(_extract_verification_snippet "$body_full"); then
+		echo "[scan] Keeping unverifiable finding: ${file_path}:${line_num} - no snippet extracted" >&2
+		echo '{"result":true,"status":"unverifiable"}'
+		return 0
+	fi
+
+	local found_in_window="false"
+	if [[ "$line_num" =~ ^[0-9]+$ && "$line_num" -gt 0 ]]; then
+		local total_lines
+		total_lines=$(printf '%s\n' "$file_content" | wc -l | tr -d ' ')
+
+		if [[ "$line_num" -le "$total_lines" ]]; then
+			local start_line=$((line_num - 20))
+			local end_line=$((line_num + 20))
+			((start_line < 1)) && start_line=1
+			((end_line > total_lines)) && end_line=$total_lines
+
+			local current_line=0
+			local file_line=""
+			while IFS= read -r file_line; do
+				current_line=$((current_line + 1))
+				if [[ "$current_line" -ge "$start_line" && "$current_line" -le "$end_line" && "$file_line" == *"$snippet"* ]]; then
+					found_in_window="true"
+					break
+				fi
+			done <<<"$file_content"
+		fi
+	fi
+
+	if [[ "$found_in_window" == "true" ]]; then
+		echo '{"result":true,"status":"verified"}'
+		return 0
+	fi
+
+	if printf '%s' "$file_content" | grep -Fq "$snippet"; then
+		echo '{"result":true,"status":"verified"}'
+		return 0
+	fi
+
+	echo "[scan] Skipping resolved finding: ${file_path}:${line_num} - snippet not found on ${default_branch}" >&2
+	echo '{"result":false,"status":"resolved"}'
+	return 1
 }
 
 # Show status of all checks
@@ -149,7 +345,7 @@ cmd_annotations() {
 		check_name=$(gh api "repos/${repo}/check-runs/${check_id}" --jq '.name')
 
 		local annotations
-		annotations=$(gh api "repos/${repo}/check-runs/${check_id}/annotations" 2>/dev/null || echo "[]")
+		annotations=$(gh api "repos/${repo}/check-runs/${check_id}/annotations" || echo "[]")
 
 		local count
 		count=$(echo "$annotations" | jq 'length')
@@ -183,7 +379,7 @@ cmd_codacy() {
 
 	local codacy_check
 	codacy_check=$(gh api "repos/${repo}/commits/${sha}/check-runs" \
-		--jq '.check_runs[] | select(.app.slug == "codacy-production" or .name | contains("Codacy"))' 2>/dev/null)
+		--jq '.check_runs[] | select(.app.slug == "codacy-production" or .name | contains("Codacy"))')
 
 	if [[ -z "$codacy_check" ]]; then
 		echo "No Codacy check found for this commit."
@@ -207,7 +403,7 @@ cmd_codacy() {
 
 	# Get annotations if available
 	local annotations
-	annotations=$(gh api "repos/${repo}/check-runs/${check_id}/annotations" 2>/dev/null || echo "[]")
+	annotations=$(gh api "repos/${repo}/check-runs/${check_id}/annotations" || echo "[]")
 	local count
 	count=$(echo "$annotations" | jq 'length')
 
@@ -226,7 +422,7 @@ cmd_coderabbit() {
 	repo=$(get_repo)
 
 	if [[ -z "$pr_number" ]]; then
-		pr_number=$(gh pr view --json number -q .number 2>/dev/null) || {
+		pr_number=$(gh pr view --json number -q .number) || {
 			echo "Error: Please specify a PR number with --pr" >&2
 			exit 1
 		}
@@ -239,10 +435,10 @@ cmd_coderabbit() {
 	# Get review comments from CodeRabbit
 	local comments
 	comments=$(gh api "repos/${repo}/pulls/${pr_number}/comments" \
-		--jq '[.[] | select(.user.login | contains("coderabbit"))]' 2>/dev/null || echo "[]")
+		--jq '[.[] | select(.user.login | contains("coderabbit"))]' || echo "[]")
 
 	local count
-	count=$(echo "$comments" | jq 'length')
+	count=$(printf '%s' "$comments" | jq 'length')
 
 	if [[ "$count" -eq 0 ]]; then
 		echo "No CodeRabbit comments found."
@@ -250,7 +446,7 @@ cmd_coderabbit() {
 		# Check for review body
 		local reviews
 		reviews=$(gh api "repos/${repo}/pulls/${pr_number}/reviews" \
-			--jq '[.[] | select(.user.login | contains("coderabbit"))]' 2>/dev/null || echo "[]")
+			--jq '[.[] | select(.user.login | contains("coderabbit"))]' || echo "[]")
 
 		local review_count
 		review_count=$(echo "$reviews" | jq 'length')
@@ -280,7 +476,7 @@ cmd_sonar() {
 
 	local sonar_check
 	sonar_check=$(gh api "repos/${repo}/commits/${sha}/check-runs" \
-		--jq '.check_runs[] | select(.name | contains("SonarCloud") or .name | contains("sonar"))' 2>/dev/null)
+		--jq '.check_runs[] | select(.name | contains("SonarCloud") or .name | contains("sonar"))')
 
 	if [[ -z "$sonar_check" ]]; then
 		echo "No SonarCloud check found for this commit."
@@ -562,7 +758,7 @@ cmd_scan_merged() {
 		batch_count=$((batch_count + 1))
 
 		local finding_count
-		finding_count=$(echo "$findings" | jq 'length' 2>/dev/null || echo "0")
+		finding_count=$(printf '%s' "$findings" | jq 'length' || echo "0")
 
 		if [[ "$finding_count" -eq 0 || "$finding_count" == "0" ]]; then
 			continue
@@ -648,12 +844,12 @@ _scan_single_pr() {
 	# --- Fetch inline review comments (file-level) ---
 	local comments
 	comments=$(gh api "repos/${repo_slug}/pulls/${pr_num}/comments" \
-		--paginate --jq '.' 2>/dev/null) || comments="[]"
+		--paginate --jq '.' | jq -s 'add // []') || comments="[]"
 
 	# --- Fetch review bodies (top-level reviews) ---
 	local reviews
 	reviews=$(gh api "repos/${repo_slug}/pulls/${pr_num}/reviews" \
-		--paginate --jq '.' 2>/dev/null) || reviews="[]"
+		--paginate --jq '.' | jq -s 'add // []') || reviews="[]"
 
 	# Process inline comments
 	local inline_findings
@@ -700,7 +896,7 @@ _scan_single_pr() {
 			url: .html_url,
 			created_at: .created_at
 		}]
-	' 2>/dev/null) || inline_findings="[]"
+	') || inline_findings="[]"
 
 	# Process review bodies (for substantive reviews with body content)
 	local review_findings
@@ -765,21 +961,21 @@ _scan_single_pr() {
 			url: .html_url,
 			created_at: .submitted_at
 		}]
-	' 2>/dev/null) || review_findings="[]"
+	') || review_findings="[]"
 
 	# Merge and deduplicate
-	findings=$(echo "$inline_findings" "$review_findings" | jq -s '.[0] + .[1]')
+	findings=$(printf '%s\n%s' "$inline_findings" "$review_findings" | jq -s '.[0] + .[1]')
 
 	# Filter: check if affected files still exist on HEAD
 	local filtered="[]"
 	local item_count
-	item_count=$(echo "$findings" | jq 'length' 2>/dev/null || echo "0")
+	item_count=$(printf '%s' "$findings" | jq 'length' || echo "0")
 
 	if [[ "$item_count" -gt 0 ]]; then
 		# Get list of files in the repo at HEAD
 		local head_files
 		head_files=$(gh api "repos/${repo_slug}/git/trees/HEAD?recursive=1" \
-			--jq '[.tree[].path]' 2>/dev/null) || head_files="[]"
+			--jq '[.tree[].path]') || head_files="[]"
 
 		filtered=$(echo "$findings" | jq --argjson head_files "$head_files" '
 			[.[] |
@@ -817,23 +1013,23 @@ _tag_actioned_prs() {
 
 	# Ensure label exists
 	gh label create "code-reviews-actioned" --repo "$repo_slug" --color "0E8A16" \
-		--description "All review feedback has been actioned" --force 2>/dev/null || true
+		--description "All review feedback has been actioned" --force || true
 
 	# Get all scanned PR numbers
 	local scanned_prs
-	scanned_prs=$(jq -r '.scanned_prs[]' "$state_file" 2>/dev/null) || return 0
+	scanned_prs=$(jq -r '.scanned_prs[]' "$state_file") || return 0
 
 	# Get all OPEN quality-debt issues with their titles (to extract PR numbers)
 	local open_debt_titles
 	open_debt_titles=$(gh issue list --repo "$repo_slug" \
 		--label "quality-debt" --state open --limit 500 \
-		--json title --jq '.[].title' 2>/dev/null || echo "")
+		--json title --jq '.[].title' || echo "")
 
 	# Get PRs that already have the label (avoid redundant API calls)
 	local already_tagged
 	already_tagged=$(gh pr list --repo "$repo_slug" --state merged \
 		--label "code-reviews-actioned" --limit 500 \
-		--json number --jq '.[].number' 2>/dev/null || echo "")
+		--json number --jq '.[].number' || echo "")
 
 	local tagged_count=0
 	local batch_count=0
@@ -842,7 +1038,7 @@ _tag_actioned_prs() {
 		[[ -z "$pr_num" ]] && continue
 
 		# Skip if already tagged
-		if echo "$already_tagged" | grep -qx "$pr_num" 2>/dev/null; then
+		if printf '%s' "$already_tagged" | grep -qx "$pr_num"; then
 			continue
 		fi
 
@@ -850,7 +1046,7 @@ _tag_actioned_prs() {
 		# Quality-debt issue titles contain "PR #NNN" — check for open ones
 		local has_open_debt=false
 		if [[ -n "$open_debt_titles" ]]; then
-			if echo "$open_debt_titles" | grep -qF "PR #${pr_num}" 2>/dev/null; then
+			if printf '%s' "$open_debt_titles" | grep -qF "PR #${pr_num}"; then
 				has_open_debt=true
 			fi
 		fi
@@ -858,7 +1054,7 @@ _tag_actioned_prs() {
 		if [[ "$has_open_debt" == false ]]; then
 			# No open debt for this PR — tag it as actioned
 			gh pr edit "$pr_num" --repo "$repo_slug" \
-				--add-label "code-reviews-actioned" 2>/dev/null || true
+				--add-label "code-reviews-actioned" || true
 			tagged_count=$((tagged_count + 1))
 		fi
 
@@ -898,11 +1094,11 @@ _backfill_priority_labels() {
 
 	# Ensure priority labels exist on the repo
 	gh label create "priority:critical" --repo "$repo_slug" --color "B60205" \
-		--description "Critical severity — security or data loss risk" --force 2>/dev/null || true
+		--description "Critical severity — security or data loss risk" --force || true
 	gh label create "priority:high" --repo "$repo_slug" --color "D93F0B" \
-		--description "High severity — significant quality issue" --force 2>/dev/null || true
+		--description "High severity — significant quality issue" --force || true
 	gh label create "priority:medium" --repo "$repo_slug" --color "FBCA04" \
-		--description "Medium severity — moderate quality issue" --force 2>/dev/null || true
+		--description "Medium severity — moderate quality issue" --force || true
 
 	# Get open quality-debt issues — extract number, title, and whether
 	# a priority label already exists, in a single jq pass
@@ -910,8 +1106,8 @@ _backfill_priority_labels() {
 	issues_to_label=$(gh issue list --repo "$repo_slug" \
 		--label "quality-debt" --state open --limit 500 \
 		--json number,title,labels \
-		--jq '.[] | select([.labels[].name] | any(startswith("priority:")) | not) | "\(.number)|\(.title)"' \
-		2>/dev/null || echo "")
+		--jq '.[] | select([.labels[].name] | any(startswith("priority:")) | not) | "\(.number)|\(.title)"' ||
+		echo "")
 
 	[[ -z "$issues_to_label" ]] && return 0
 
@@ -930,7 +1126,7 @@ _backfill_priority_labels() {
 
 		if [[ -n "$severity" ]]; then
 			gh issue edit "$issue_num" --repo "$repo_slug" \
-				--add-label "priority:${severity}" 2>/dev/null || true
+				--add-label "priority:${severity}" || true
 			labelled_count=$((labelled_count + 1))
 		fi
 	done <<<"$issues_to_label"
@@ -957,9 +1153,53 @@ _create_quality_debt_issues() {
 	local repo_slug="$1"
 	local pr_num="$2"
 	local findings="$3"
+	local verified_findings_stream=""
+
+	while IFS= read -r finding; do
+		[[ -z "$finding" ]] && continue
+
+		local file_path=""
+		local line_num=""
+		local body_full=""
+		local verification_json=""
+		local verification_result=""
+		local verification_status=""
+		local finding_fields=""
+		local finding_with_status=""
+
+		# Single jq call to extract all three fields (body_full base64-encoded to preserve newlines)
+		finding_fields=$(printf '%s' "$finding" | jq -r '"\(.file // "")\t\(.line // "?")\t\(.body_full // .body // "" | @base64)"')
+		IFS=$'\t' read -r file_path line_num body_full <<<"$finding_fields"
+		body_full=$(printf '%s' "$body_full" | base64 -d)
+
+		verification_json=$(_finding_still_exists_on_main "$repo_slug" "$file_path" "$line_num" "$body_full" || true)
+
+		# Parse fixed-format JSON without jq — format is {"result":bool,"status":"str"}
+		verification_result="false"
+		verification_status="verified"
+		if [[ "$verification_json" == *'"result":true'* ]]; then
+			verification_result="true"
+		fi
+		if [[ "$verification_json" == *'"status":"unverifiable"'* ]]; then
+			verification_status="unverifiable"
+		elif [[ "$verification_json" == *'"status":"resolved"'* ]]; then
+			verification_status="resolved"
+		fi
+
+		if [[ "$verification_result" == "true" ]]; then
+			finding_with_status=$(printf '%s' "$finding" | jq --arg status "$verification_status" '. + {verification_status: $status}')
+			verified_findings_stream+="${finding_with_status}"$'\n'
+		fi
+	done < <(printf '%s' "$findings" | jq -c '.[]')
+
+	if [[ -n "$verified_findings_stream" ]]; then
+		findings=$(printf '%s' "$verified_findings_stream" | jq -s '.')
+	else
+		findings="[]"
+	fi
 
 	local finding_count
-	finding_count=$(echo "$findings" | jq 'length' 2>/dev/null || echo "0")
+	finding_count=$(printf '%s' "$findings" | jq 'length' || echo "0")
 
 	if [[ "$finding_count" -eq 0 ]]; then
 		echo "0"
@@ -968,13 +1208,13 @@ _create_quality_debt_issues() {
 
 	# Ensure labels exist (quality-debt + priority labels for dispatch ordering, t1413)
 	gh label create "quality-debt" --repo "$repo_slug" --color "D93F0B" \
-		--description "Unactioned review feedback from merged PRs" --force 2>/dev/null || true
+		--description "Unactioned review feedback from merged PRs" --force || true
 	gh label create "priority:critical" --repo "$repo_slug" --color "B60205" \
-		--description "Critical severity — security or data loss risk" --force 2>/dev/null || true
+		--description "Critical severity — security or data loss risk" --force || true
 	gh label create "priority:high" --repo "$repo_slug" --color "D93F0B" \
-		--description "High severity — significant quality issue" --force 2>/dev/null || true
+		--description "High severity — significant quality issue" --force || true
 	gh label create "priority:medium" --repo "$repo_slug" --color "FBCA04" \
-		--description "Medium severity — moderate quality issue" --force 2>/dev/null || true
+		--description "Medium severity — moderate quality issue" --force || true
 
 	# Check existing quality-debt issues to avoid duplicates.
 	# Fetch title/number/state so we can dedupe against both open and closed history.
@@ -1034,6 +1274,7 @@ _create_quality_debt_issues() {
 		finding_details=$(echo "$file_findings" | jq -r '.[] |
 			"### \(.severity | ascii_upcase): \(.reviewer) (\(.reviewer_login))\n" +
 			(if .file != null and .line != null then "**File**: `\(.file):\(.line)`\n" else "" end) +
+			(if .verification_status == "unverifiable" then "**Verification**: kept as unverifiable (no stable snippet extracted)\n" else "" end) +
 			"\(.body_full)\n\n" +
 			(if .url != null then "[View comment](\(.url))\n" else "" end) +
 			"---\n"
@@ -1265,4 +1506,6 @@ main() {
 	return 0
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	main "$@"
+fi

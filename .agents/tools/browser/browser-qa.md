@@ -119,6 +119,15 @@ browser-qa-helper.sh screenshot --url http://localhost:3000 \
 | tablet | 768 | 1024 | iPad portrait |
 | mobile | 375 | 667 | iPhone SE/8 |
 
+**Image size warning**: Full-page screenshots of long pages can exceed Anthropic's hard reject threshold of `8000×8000 px` (64 megapixels total area). The `1568 px` value refers to an auto-resize trigger on the long edge — images exceeding this are automatically downscaled by the API, incurring latency penalties. For optimal performance, resize screenshots to ≤1568 px on the longest side (≤1.15 megapixels) before sending to a vision API:
+
+```bash
+# Resize to max 1568px on longest side (macOS built-in, non-destructive)
+sips --resampleHeightWidthMax 1568 screenshot.png --out screenshot-resized.png
+```
+
+See `tools/vision/image-understanding.md` for per-provider limits. GH#4213 tracks adding auto-resize to `browser-qa-helper.sh`.
+
 **What to look for in screenshots**:
 - Layout breaks (overlapping elements, content overflow)
 - Missing images or icons (broken `<img>` tags)

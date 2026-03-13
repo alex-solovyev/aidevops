@@ -295,11 +295,11 @@ main() {
 	local effective_workdir="${workdir:-.}"
 	if [[ -z "$model" || -z "$timeout" ]] && [[ -x "$bundle_helper" ]]; then
 		local bundle_json
-		bundle_json=$("$bundle_helper" resolve "$effective_workdir" 2>/dev/null) || true
+		bundle_json=$("$bundle_helper" resolve "$effective_workdir") || true
 		if [[ -n "$bundle_json" ]]; then
 			if [[ -z "$model" ]]; then
 				local bundle_model
-				bundle_model=$(echo "$bundle_json" | jq -r '.model_defaults.implementation // empty' 2>/dev/null) || true
+				bundle_model=$(printf '%s' "$bundle_json" | jq -r '.model_defaults.implementation // empty') || true
 				if [[ -n "$bundle_model" ]]; then
 					model="$bundle_model"
 					log_info "Bundle: using model default '${model}' from project bundle"
@@ -307,7 +307,7 @@ main() {
 			fi
 			if [[ -z "$timeout" ]]; then
 				local bundle_timeout
-				bundle_timeout=$(echo "$bundle_json" | jq -r '.dispatch.default_timeout_minutes // empty' 2>/dev/null) || true
+				bundle_timeout=$(printf '%s' "$bundle_json" | jq -r '.dispatch.default_timeout_minutes // empty') || true
 				if [[ -n "$bundle_timeout" ]]; then
 					timeout=$((bundle_timeout * 60))
 					log_info "Bundle: using timeout ${timeout}s from project bundle"
@@ -387,12 +387,15 @@ main() {
 		# Resolve repo slug from workdir git remote
 		local repo_slug=""
 		if [[ -n "$workdir" && -d "$workdir" ]]; then
-			repo_slug=$(git -C "$workdir" remote get-url origin 2>/dev/null |
-				sed -E 's|.*github\.com[:/]||; s|\.git$||' || true)
+			local remote_url
+			remote_url=$(git -C "$workdir" remote get-url origin) || true
+			if [[ -n "$remote_url" ]]; then
+				repo_slug=$(printf '%s' "$remote_url" | sed -E 's|.*github\.com[:/]||; s|\.git$||')
+			fi
 		fi
 
 		if [[ -n "$repo_slug" ]]; then
-			worker_token_file=$("$TOKEN_HELPER" create --repo "$repo_slug" --ttl "$timeout" 2>/dev/null) || {
+			worker_token_file=$("$TOKEN_HELPER" create --repo "$repo_slug" --ttl "$timeout") || {
 				log_info "Scoped token creation failed for ${repo_slug}, proceeding with default credentials"
 				worker_token_file=""
 			}
@@ -432,7 +435,7 @@ main() {
 
 	# Revoke scoped worker token (t1412.2)
 	if [[ -n "$worker_token_file" ]] && [[ -x "$TOKEN_HELPER" ]]; then
-		"$TOKEN_HELPER" revoke --token-file "$worker_token_file" 2>/dev/null || true
+		"$TOKEN_HELPER" revoke --token-file "$worker_token_file" || true
 		log_info "Revoked scoped worker token"
 	fi
 
@@ -443,7 +446,7 @@ main() {
 
 		# Log response summary
 		local response_text
-		response_text=$(echo "$response" | jq -r '.parts[]? | select(.type == "text") | .text' 2>/dev/null | head -c 1000 || echo "$response")
+		response_text=$(printf '%s' "$response" | jq -r '.parts[]? | select(.type == "text") | .text' 2>&1 | head -c 1000 || printf '%s' "$response")
 		log_info "Response: $response_text"
 
 		# Send notification if configured

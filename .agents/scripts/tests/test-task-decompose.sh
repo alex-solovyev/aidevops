@@ -299,10 +299,10 @@ test_classify_skips_already_decomposed() {
 
 	if [[ "$kind" == "atomic" ]]; then
 		# Also verify the reasoning mentions existing subtasks
-		if echo "$output" | grep -q "already has subtasks"; then
+		if printf '%s' "$output" | grep -q "already has subtasks"; then
 			print_result "classify: skips already-decomposed task (t1408)" 0
 		else
-			print_result "classify: skips already-decomposed task (t1408)" 0
+			print_result "classify: skips already-decomposed task (t1408)" 1 "Classified as atomic but missing 'already has subtasks' reasoning"
 		fi
 	else
 		print_result "classify: skips already-decomposed task (t1408)" 1 "Expected atomic (already decomposed), got: $kind"
@@ -340,10 +340,10 @@ test_decompose_refuses_already_decomposed() {
 	output=$("$HELPER" decompose "$desc" --task-id t1408 --todo-file "${TEST_DIR}/TODO.md" 2>&1) || exit_code=$?
 
 	if [[ "$exit_code" -eq 1 ]]; then
-		if echo "$output" | grep -qi "already has subtasks\|skipping"; then
+		if printf '%s' "$output" | grep -qi "already has subtasks\|skipping"; then
 			print_result "decompose: refuses already-decomposed task (t1408)" 0
 		else
-			print_result "decompose: refuses already-decomposed task (t1408)" 0
+			print_result "decompose: refuses already-decomposed task (t1408)" 1 "Exit 1 but missing 'already has subtasks' or 'skipping' in output"
 		fi
 	else
 		print_result "decompose: refuses already-decomposed task (t1408)" 1 "Expected exit 1, got: $exit_code"

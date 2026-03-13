@@ -1,6 +1,6 @@
 {
   "name": "aidevops",
-  "version": "2.172.9",
+  "version": "2.172.18",
   "description": "AI DevOps Framework - AI-assisted development workflows, code quality, and deployment automation",
   "type": "module",
   "bin": {
@@ -58,6 +58,7 @@
     "bin/",
     "aidevops.sh",
     "setup.sh",
+    "setup-modules/",
     "VERSION",
     "scripts/npm-postinstall.cjs",
     "templates/"

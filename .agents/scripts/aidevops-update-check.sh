@@ -259,7 +259,7 @@ main() {
 	# Security posture check (t1412.6)
 	local security_posture=""
 	if [[ -x "${script_dir}/security-posture-helper.sh" ]]; then
-		security_posture="$("${script_dir}/security-posture-helper.sh" startup-check 2>/dev/null || true)"
+		security_posture="$("${script_dir}/security-posture-helper.sh" startup-check || true)"
 	fi
 	if [[ -n "$security_posture" ]]; then
 		echo "$security_posture"

@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
+SOURCE_HELPER="${SCRIPT_DIR}/../profile-readme-helper.sh"
+
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly RESET='\033[0m'
+
+TESTS_RUN=0
+TESTS_PASSED=0
+TESTS_FAILED=0
+
+TEST_DIR=""
+
+print_result() {
+	local test_name="$1"
+	local result="$2"
+	local message="${3:-}"
+
+	TESTS_RUN=$((TESTS_RUN + 1))
+
+	if [[ "$result" -eq 0 ]]; then
+		echo -e "${GREEN}PASS${RESET} ${test_name}"
+		TESTS_PASSED=$((TESTS_PASSED + 1))
+	else
+		echo -e "${RED}FAIL${RESET} ${test_name}"
+		if [[ -n "$message" ]]; then
+			echo "       ${message}"
+		fi
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+	fi
+
+	return 0
+}
+
+write_stub_dependencies() {
+	local stub_dir="$1"
+
+	cat >"${stub_dir}/screen-time-helper.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "profile-stats" ]]; then
+	printf '%s\n' '{"today_hours":1.0,"week_hours":2.0,"month_hours":3.0,"year_hours":4.0}'
+else
+	printf '%s\n' '{}'
+fi
+return 0 2>/dev/null || exit 0
+EOF
+
+	cat >"${stub_dir}/contributor-activity-helper.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "session-time" ]]; then
+	printf '%s\n' '{"interactive_human_hours":1.0,"worker_human_hours":2.0,"worker_machine_hours":3.0,"total_human_hours":4.0,"total_machine_hours":5.0,"interactive_sessions":6,"worker_sessions":7}'
+else
+	printf '%s\n' '{}'
+fi
+return 0 2>/dev/null || exit 0
+EOF
+
+	chmod +x "${stub_dir}/screen-time-helper.sh" "${stub_dir}/contributor-activity-helper.sh"
+	return 0
+}
+
+create_profile_repo_fixture() {
+	local fixture_home="$1"
+	local profile_repo="$2"
+	local remote_repo="$3"
+
+	mkdir -p "${fixture_home}/.config/aidevops"
+	mkdir -p "${fixture_home}/.aidevops/.agent-workspace/observability"
+
+	cat >"${fixture_home}/.config/aidevops/repos.json" <<EOF
+{
+  "initialized_repos": [
+    {
+      "path": "${profile_repo}",
+      "slug": "fixture/fixture",
+      "priority": "profile",
+      "pulse": false,
+      "maintainer": "fixture"
+    }
+  ]
+}
+EOF
+
+	git init --bare --initial-branch=main "${remote_repo}" >/dev/null
+	git init -b main "${profile_repo}" >/dev/null
+	git -C "${profile_repo}" config user.name "Fixture"
+	git -C "${profile_repo}" config user.email "fixture@example.com"
+	git -C "${profile_repo}" remote add origin "${remote_repo}"
+
+	cat >"${profile_repo}/README.md" <<'EOF'
+# Fixture Profile
+
+![ManualBadgeA](https://example.com/a.svg)
+![ManualBadgeB](https://example.com/b.svg)
+
+Manual preface block that must not be rewritten.
+
+<!-- STATS-START -->
+Old stats block
+<!-- STATS-END -->
+
+Manual suffix block that must not be rewritten.
+
+## Connect
+
+- Stay in touch
+
+<!-- UPDATED-START -->
+Old timestamp
+<!-- UPDATED-END -->
+EOF
+
+	git -C "${profile_repo}" add README.md
+	git -C "${profile_repo}" commit -m "feat: seed fixture readme" >/dev/null
+	git -C "${profile_repo}" push -u origin main >/dev/null
+
+	return 0
+}
+
+strip_dynamic_sections() {
+	local file_path="$1"
+	awk '
+		/<!-- STATS-START -->/ { print; skip_stats = 1; next }
+		/<!-- STATS-END -->/ { skip_stats = 0; print; next }
+		/<!-- UPDATED-START -->/ { print; skip_updated = 1; next }
+		/<!-- UPDATED-END -->/ { skip_updated = 0; print; next }
+		!skip_stats && !skip_updated { print }
+	' "$file_path"
+	return 0
+}
+
+test_update_preserves_manual_sections() {
+	local test_name="profile update preserves non-marker sections"
+
+	TEST_DIR=$(mktemp -d)
+	local fixture_home="${TEST_DIR}/home"
+	local fixture_repo="${TEST_DIR}/profile-repo"
+	local fixture_remote="${TEST_DIR}/profile-remote.git"
+	local helper_dir="${TEST_DIR}/helper"
+	local helper_path="${helper_dir}/profile-readme-helper.sh"
+
+	mkdir -p "${helper_dir}" "${fixture_home}"
+	cp "${SOURCE_HELPER}" "${helper_path}"
+	chmod +x "${helper_path}"
+
+	write_stub_dependencies "${helper_dir}"
+	create_profile_repo_fixture "${fixture_home}" "${fixture_repo}" "${fixture_remote}"
+
+	local before_file="${TEST_DIR}/before.md"
+	local after_file="${TEST_DIR}/after.md"
+	cp "${fixture_repo}/README.md" "${before_file}"
+
+	if ! HOME="${fixture_home}" bash "${helper_path}" update >/dev/null 2>&1; then
+		print_result "${test_name}" 1 "helper update command failed"
+		return 0
+	fi
+
+	cp "${fixture_repo}/README.md" "${after_file}"
+
+	local before_static
+	local after_static
+	before_static="$(strip_dynamic_sections "${before_file}")"
+	after_static="$(strip_dynamic_sections "${after_file}")"
+
+	if [[ "${before_static}" != "${after_static}" ]]; then
+		print_result "${test_name}" 1 "content outside STATS/UPDATED markers changed"
+		return 0
+	fi
+
+	if ! grep -q 'ManualBadgeA' "${after_file}" || ! grep -q 'ManualBadgeB' "${after_file}"; then
+		print_result "${test_name}" 1 "manual badge lines missing after update"
+		return 0
+	fi
+
+	print_result "${test_name}" 0
+	return 0
+}
+
+teardown() {
+	if [[ -n "${TEST_DIR}" && -d "${TEST_DIR}" ]]; then
+		rm -rf "${TEST_DIR}"
+	fi
+	TEST_DIR=""
+	return 0
+}
+
+main() {
+	if [[ ! -x "${SOURCE_HELPER}" ]]; then
+		echo "Helper script not found or not executable: ${SOURCE_HELPER}" >&2
+		return 1
+	fi
+
+	test_update_preserves_manual_sections
+
+	echo ""
+	echo "Tests run: ${TESTS_RUN}"
+	echo "Passed:    ${TESTS_PASSED}"
+	echo "Failed:    ${TESTS_FAILED}"
+
+	teardown
+
+	if [[ "${TESTS_FAILED}" -gt 0 ]]; then
+		return 1
+	fi
+
+	return 0
+}
+
+main "$@"
