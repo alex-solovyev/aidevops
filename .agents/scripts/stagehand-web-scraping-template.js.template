@@ -1,0 +1,75 @@
+// Web Scraping Template with Stagehand
+// Adaptable template for various websites
+
+import { Stagehand } from "@browserbasehq/stagehand";
+import { z } from "zod";
+
+// Define your data schema here
+const DataSchema = z.object({
+    title: z.string().describe("Page or item title"),
+    description: z.string().describe("Description or content"),
+    url: z.string().describe("Source URL"),
+    metadata: z.object({
+        author: z.string().optional(),
+        date: z.string().optional(),
+        category: z.string().optional()
+    }).optional()
+});
+
+async function scrapeWebsite(url, extractionPrompt, maxItems = 10) {
+    const stagehand = new Stagehand({
+        env: "LOCAL",
+        verbose: 1,
+        headless: true // Set to false for debugging
+    });
+
+    try {
+        await stagehand.init();
+        
+        console.log(`Navigating to: ${url}`);
+        await stagehand.page.goto(url);
+        
+        // Wait for page to load
+        await stagehand.page.waitForTimeout(3000);
+        
+        // Handle cookie banners or popups
+        try {
+            await stagehand.act("close any cookie banners or popups", { timeout: 5000 });
+        } catch (error) {
+            console.log("No popups to close");
+        }
+        
+        // Extract data based on the prompt
+        const data = await stagehand.extract(
+            extractionPrompt,
+            z.array(DataSchema).max(maxItems)
+        );
+        
+        console.log(`Extracted ${data.length} items:`);
+        data.forEach((item, index) => {
+            console.log(`${index + 1}. ${item.title}`);
+            console.log(`   ${item.description.substring(0, 100)}...`);
+        });
+        
+        return data;
+        
+    } catch (error) {
+        console.error("Error during web scraping:", error);
+        throw error;
+    } finally {
+        await stagehand.close();
+    }
+}
+
+// Example usage
+if (import.meta.url === `file://${process.argv[1]}`) {
+    const url = process.argv[2] || "https://news.ycombinator.com";
+    const prompt = process.argv[3] || "extract the top stories with titles and descriptions";
+    const maxItems = parseInt(process.argv[4]) || 10;
+    
+    scrapeWebsite(url, prompt, maxItems)
+        .then(() => console.log("Web scraping completed"))
+        .catch(console.error);
+}
+
+export { scrapeWebsite };

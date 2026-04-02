@@ -1,0 +1,39 @@
+async def solve_cloudflare_turnstile_example():
+    """Example: Solving Cloudflare Turnstile"""
+    site_url = "https://clifford.io/demo/cloudflare-turnstile"
+    site_key = "0x4AAAAAAAGlwMzq_9z6S9Mh"
+    browser_config = BrowserConfig(
+        verbose=True, headless=False, use_persistent_context=True,
+    )
+    async with AsyncWebCrawler(config=browser_config) as crawler:
+        await crawler.arun(
+            url=site_url, cache_mode=CacheMode.BYPASS,
+            session_id="turnstile_session"
+        )
+        print("Solving Cloudflare Turnstile...")
+        solution = capsolver.solve({
+            "type": "AntiTurnstileTaskProxyLess",
+            "websiteURL": site_url,
+            "websiteKey": site_key,
+        })
+        token = solution["token"]
+        print(f"Token obtained: {token[:50]}...")
+        js_code = f"""
+            document.querySelector('input[name="cf-turnstile-response"]').value = '{token}';
+            document.querySelector('button[type="submit"]').click();
+        """
+        wait_condition = """() => {
+            const items = document.querySelectorAll('h1');
+            return items.length === 0;
+        }"""
+        run_config = CrawlerRunConfig(
+            cache_mode=CacheMode.BYPASS,
+            session_id="turnstile_session",
+            js_code=js_code, js_only=True,
+            wait_for=f"js:{wait_condition}"
+        )
+        result = await crawler.arun(url=site_url, config=run_config)
+        print("Turnstile solved successfully!")
+        return result.markdown
+
+EOF

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "stagehand": {
+      "command": "node",
+      "args": [
+        "-e",
+        "const { Stagehand } = require('@browserbasehq/stagehand'); console.log('Stagehand MCP Server Ready');"
+      ],
+      "env": {
+        "STAGEHAND_ENV": "LOCAL",
+        "STAGEHAND_VERBOSE": "1"
+      }
+    }
+  }

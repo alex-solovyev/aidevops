@@ -468,63 +468,23 @@ EOF
 }
 
 # Write CapSolver example: reCAPTCHA v2 solve function
-_capsolver_example_recaptcha_v2() {
+_capsolver_example_recaptcha() {
 	local script_file="$1"
+	cat "$SCRIPT_DIR/crawl4ai-recaptcha.py.template" >>"$script_file"
+	return 0
+}
 
-	cat >>"$script_file" <<'EOF'
-async def solve_recaptcha_v2_example():
-    """Example: Solving reCAPTCHA v2 checkbox"""
-    site_url = "https://recaptcha-demo.appspot.com/recaptcha-v2-checkbox.php"
-    site_key = "6LfW6wATAAAAAHLqO2pb8bDBahxlMxNdo9g947u9"
+# Write CapSolver example: Cloudflare Turnstile solve function
+_capsolver_example_turnstile() {
+	local script_file="$1"
+	cat "$SCRIPT_DIR/crawl4ai-turnstile.py.template" >>"$script_file"
+	return 0
+}
 
-    browser_config = BrowserConfig(
-        verbose=True,
-        headless=False,
-        use_persistent_context=True,
-    )
-
-    async with AsyncWebCrawler(config=browser_config) as crawler:
-        await crawler.arun(
-            url=site_url,
-            cache_mode=CacheMode.BYPASS,
-            session_id="captcha_session"
-        )
-
-        print("Solving reCAPTCHA v2...")
-        solution = capsolver.solve({
-            "type": "ReCaptchaV2TaskProxyLess",
-            "websiteURL": site_url,
-            "websiteKey": site_key,
-        })
-        token = solution["gRecaptchaResponse"]
-        print(f"Token obtained: {token[:50]}...")
-
-        js_code = f"""
-            const textarea = document.getElementById('g-recaptcha-response');
-            if (textarea) {{
-                textarea.value = '{token}';
-                document.querySelector('button.form-field[type="submit"]').click();
-            }}
-        """
-
-        wait_condition = """() => {
-            const items = document.querySelectorAll('h2');
-            return items.length > 1;
-        }"""
-
-        run_config = CrawlerRunConfig(
-            cache_mode=CacheMode.BYPASS,
-            session_id="captcha_session",
-            js_code=js_code,
-            js_only=True,
-            wait_for=f"js:{wait_condition}"
-        )
-
-        result = await crawler.arun(url=site_url, config=run_config)
-        print("CAPTCHA solved successfully!")
-        return result.markdown
-
-EOF
+# Write CapSolver example: main entry point
+_capsolver_example_main() {
+	local script_file="$1"
+	cat "$SCRIPT_DIR/crawl4ai-main.py.template" >>"$script_file"
 	return 0
 }
 

@@ -1,0 +1,39 @@
+{
+  "subject": "$subject",
+  "concept": "$concept",
+  "composition": {
+    "framing": "medium shot",
+    "angle": "eye-level",
+    "rule_of_thirds": false,
+    "focal_point": "centered with 30% clear space for text",
+    "depth_of_field": "deep"
+  },
+  "lighting": {
+    "type": "studio",
+    "direction": "front",
+    "quality": "soft diffused",
+    "color_temperature": "neutral (5500K)",
+    "mood": "bright and airy"
+  },
+  "color": {
+    "palette": ["#FFFFFF", "#2C3E50", "#E74C3C"],
+    "dominant": "#FFFFFF",
+    "accent": "#E74C3C",
+    "saturation": "vibrant",
+    "harmony": "complementary"
+  },
+  "style": {
+    "aesthetic": "minimalist",
+    "texture": "digital clean",
+    "post_processing": "none",
+    "reference": "Tutorial thumbnail with text space"
+  },
+  "technical": {
+    "camera": "Sony A7IV",
+    "lens": "50mm f/1.8",
+    "settings": "f/2.8, 1/250s, ISO 400",
+    "resolution": "4K",
+    "aspect_ratio": "16:9"
+  },
+  "negative": "cluttered, busy background, text overlay, watermark, low contrast"
+}

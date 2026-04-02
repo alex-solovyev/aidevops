@@ -1,0 +1,95 @@
+// Social Media Automation with Stagehand
+// Ethical LinkedIn engagement automation
+
+import { Stagehand } from "@browserbasehq/stagehand";
+import { z } from "zod";
+
+const PostSchema = z.object({
+    author: z.string().describe("Post author name"),
+    content: z.string().describe("Post content preview"),
+    engagement: z.object({
+        likes: z.number().describe("Number of likes"),
+        comments: z.number().describe("Number of comments"),
+        shares: z.number().describe("Number of shares")
+    }).describe("Engagement metrics"),
+    timestamp: z.string().describe("When the post was published")
+});
+
+async function analyzeLinkedInFeed(maxPosts = 10) {
+    const stagehand = new Stagehand({
+        env: "LOCAL",
+        verbose: 1,
+        headless: false
+    });
+
+    try {
+        await stagehand.init();
+        
+        // Navigate to LinkedIn feed
+        console.log("Navigating to LinkedIn feed...");
+        await stagehand.page.goto("https://linkedin.com/feed");
+        
+        // Wait for login if needed
+        const currentUrl = stagehand.page.url();
+        if (currentUrl.includes('login') || currentUrl.includes('authwall')) {
+            console.log("Please log in to LinkedIn manually, then press Enter to continue...");
+            await new Promise(resolve => {
+                process.stdin.once('data', () => resolve());
+            });
+        }
+        
+        // Scroll to load more posts
+        console.log("Loading posts...");
+        for (let i = 0; i < 3; i++) {
+            await stagehand.act("scroll down to load more posts");
+            await stagehand.page.waitForTimeout(2000);
+        }
+        
+        // Analyze posts
+        const posts = await stagehand.extract(
+            `analyze the first ${maxPosts} posts in the feed`,
+            z.array(PostSchema)
+        );
+        
+        console.log(`Analyzed ${posts.length} posts:`);
+        posts.forEach((post, index) => {
+            console.log(`\n${index + 1}. ${post.author}`);
+            console.log(`   Content: ${post.content.substring(0, 100)}...`);
+            console.log(`   Engagement: ${post.engagement.likes} likes, ${post.engagement.comments} comments`);
+        });
+        
+        // Find posts about AI/technology for engagement
+        const techPosts = posts.filter(post => 
+            post.content.toLowerCase().includes('ai') ||
+            post.content.toLowerCase().includes('technology') ||
+            post.content.toLowerCase().includes('software')
+        );
+        
+        if (techPosts.length > 0) {
+            console.log(`\nFound ${techPosts.length} tech-related posts for potential engagement`);
+            
+            // Ethical engagement - like one relevant post
+            await stagehand.act("like the first post about AI or technology");
+            console.log("Engaged with one relevant post");
+        }
+        
+        return posts;
+        
+    } catch (error) {
+        console.error("Error during LinkedIn analysis:", error);
+        throw error;
+    } finally {
+        await stagehand.close();
+    }
+}
+
+// Example usage
+if (import.meta.url === `file://${process.argv[1]}`) {
+    const maxPosts = parseInt(process.argv[2]) || 10;
+    
+    analyzeLinkedInFeed(maxPosts)
+        .then(() => console.log("LinkedIn analysis completed"))
+        .catch(console.error);
+}
+
+export { analyzeLinkedInFeed };

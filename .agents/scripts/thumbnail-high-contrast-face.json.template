@@ -1,0 +1,39 @@
+{
+  "subject": "$subject",
+  "concept": "$concept",
+  "composition": {
+    "framing": "close-up",
+    "angle": "eye-level",
+    "rule_of_thirds": true,
+    "focal_point": "face and eyes",
+    "depth_of_field": "shallow"
+  },
+  "lighting": {
+    "type": "studio",
+    "direction": "three-point",
+    "quality": "soft diffused",
+    "color_temperature": "neutral (5500K)",
+    "mood": "high contrast"
+  },
+  "color": {
+    "palette": ["#FF6B35", "#004E89", "#FFFFFF"],
+    "dominant": "#004E89",
+    "accent": "#FF6B35",
+    "saturation": "vibrant",
+    "harmony": "complementary"
+  },
+  "style": {
+    "aesthetic": "editorial",
+    "texture": "digital clean",
+    "post_processing": "light grading",
+    "reference": "Professional YouTube thumbnail"
+  },
+  "technical": {
+    "camera": "Canon R5",
+    "lens": "85mm f/1.2",
+    "settings": "f/1.8, 1/200s, ISO 200",
+    "resolution": "4K",
+    "aspect_ratio": "16:9"
+  },
+  "negative": "blurry, low quality, distorted, watermark, text overlay, multiple faces, cluttered background"
+}

@@ -1,0 +1,195 @@
+import { chromium } from 'playwright';
+
+const DOMAINS = ${domains_json};
+const SITEMAP_PATH = "${sitemap_path}";
+const DRY_RUN = ${dry_run};
+const HEADLESS = ${headless};
+const TIMEOUT = ${timeout};
+const SCREENSHOT_DIR = "${SCREENSHOT_DIR}";
+
+async function waitForGSCLoad(page) {
+    await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(2000);
+}
+
+async function main() {
+    console.log("=".repeat(60));
+    console.log("Google Search Console - Sitemap Submission Tool");
+    console.log("=".repeat(60));
+    
+    const browser = await chromium.launchPersistentContext(
+        '${chrome_profile}',
+        { 
+            headless: HEADLESS, 
+            channel: 'chrome',
+            ignoreDefaultArgs: ['--enable-automation'],
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-infobars',
+                '--no-first-run',
+                '--no-default-browser-check'
+            ],
+            viewport: { width: 1400, height: 900 }
+        }
+    );
+    
+    const page = await browser.newPage();
+    const results = { success: [], skipped: [], failed: [] };
+    
+    for (let i = 0; i < DOMAINS.length; i++) {
+        const domain = DOMAINS[i];
+        console.log(\`\\n\${'─'.repeat(60)}\`);
+        console.log(\`[\${i + 1}/\${DOMAINS.length}] \${domain}\`);
+        console.log('─'.repeat(60));
+        
+        try {
+            const gscUrl = \`https://search.google.com/search-console/sitemaps?resource_id=sc-domain:\${domain}\`;
+            console.log(\`Opening: \${gscUrl}\`);
+            await page.goto(gscUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+            await waitForGSCLoad(page);
+            
+            const pageContent = await page.content();
+            if (pageContent.includes("don't have access") || pageContent.includes("Request access")) {
+                console.log(\`⏭ No access to \${domain}\`);
+                results.failed.push(\`\${domain} (no access)\`);
+                continue;
+            }
+            
+            // Check for existing sitemap in table
+            const sitemapInTable = await page.\$('table:has-text("' + SITEMAP_PATH + '")') ||
+                                   await page.\$('tr:has-text("' + SITEMAP_PATH + '")') ||
+                                   await page.\$('[role="row"]:has-text("' + SITEMAP_PATH + '")') ||
+                                   await page.\$('a:has-text("' + SITEMAP_PATH + '")');
+            
+            if (sitemapInTable) {
+                console.log(\`⏭ Sitemap already submitted for \${domain}\`);
+                results.skipped.push(domain);
+                continue;
+            }
+            
+            if (DRY_RUN) {
+                console.log(\`🔍 Would submit sitemap for \${domain} (dry-run)\`);
+                results.success.push(\`\${domain} (dry-run)\`);
+                continue;
+            }
+            
+            // Find the "Add a new sitemap" input
+            console.log("Looking for 'Add a new sitemap' input...");
+            const addSitemapSection = await page.\$('text="Add a new sitemap"');
+            
+            let input = null;
+            if (addSitemapSection) {
+                const container = await addSitemapSection.evaluateHandle(el => {
+                    let parent = el.parentElement;
+                    for (let i = 0; i < 5; i++) {
+                        if (parent && parent.querySelector('input')) {
+                            return parent;
+                        }
+                        parent = parent?.parentElement;
+                    }
+                    return parent;
+                });
+                input = await container.\$('input');
+            }
+            
+            // Fallback: find input that's not search
+            if (!input) {
+                const allInputs = await page.\$\$('input[type="text"]');
+                for (const inp of allInputs) {
+                    const placeholder = await inp.getAttribute('placeholder') || '';
+                    const ariaLabel = await inp.getAttribute('aria-label') || '';
+                    if (placeholder.toLowerCase().includes('search') || 
+                        ariaLabel.toLowerCase().includes('search') ||
+                        placeholder.toLowerCase().includes('filter')) {
+                        continue;
+                    }
+                    input = inp;
+                    break;
+                }
+            }
+            
+            if (!input) {
+                console.log(\`✗ No 'Add sitemap' input found for \${domain}\`);
+                await page.screenshot({ path: \`\${SCREENSHOT_DIR}/\${domain.replace(/\\./g, '-')}-error.png\`, fullPage: true });
+                results.failed.push(\`\${domain} (no input)\`);
+                continue;
+            }
+            
+            // Fill with full URL - use domain as-is (don't force www.)
+            // GSC accepts both www and non-www depending on how the property is verified
+            const fullSitemapUrl = \`https://\${domain}/\${SITEMAP_PATH}\`;
+            console.log(\`Found input, filling \${fullSitemapUrl}...\`);
+            await input.click();
+            await page.waitForTimeout(300);
+            await input.fill(fullSitemapUrl);
+            await page.waitForTimeout(500);
+            
+            await page.screenshot({ path: \`\${SCREENSHOT_DIR}/\${domain.replace(/\\./g, '-')}-filled.png\`, fullPage: true });
+            
+            // Find and click SUBMIT button relative to input
+            console.log("Clicking SUBMIT button...");
+            try {
+                await page.waitForTimeout(500);
+                
+                const submitBtn = await input.evaluateHandle(el => {
+                    let parent = el.parentElement;
+                    for (let i = 0; i < 10; i++) {
+                        if (!parent) break;
+                        const btn = parent.querySelector('[role="button"]');
+                        if (btn && btn.textContent.trim().toUpperCase() === 'SUBMIT') {
+                            return btn;
+                        }
+                        parent = parent.parentElement;
+                    }
+                    return null;
+                });
+                
+                if (submitBtn) {
+                    await submitBtn.click();
+                } else {
+                    throw new Error("Could not find SUBMIT button near input");
+                }
+                
+                await page.waitForTimeout(3000);
+                await waitForGSCLoad(page);
+                
+                await page.screenshot({ path: \`\${SCREENSHOT_DIR}/\${domain.replace(/\\./g, '-')}-submitted.png\`, fullPage: true });
+                console.log(\`✓ Submitted sitemap for \${domain}\`);
+                results.success.push(domain);
+                
+            } catch (e) {
+                console.log(\`Submit failed: \${e.message}\`);
+                await page.screenshot({ path: \`\${SCREENSHOT_DIR}/\${domain.replace(/\\./g, '-')}-submit-error.png\`, fullPage: true });
+                results.failed.push(\`\${domain} (submit failed)\`);
+            }
+            
+        } catch (error) {
+            console.error(\`✗ Error for \${domain}: \${error.message}\`);
+            results.failed.push(\`\${domain} (error)\`);
+        }
+        
+        await page.waitForTimeout(1000);
+    }
+    
+    // Summary
+    console.log("\\n" + "=".repeat(60));
+    console.log("SUMMARY");
+    console.log("=".repeat(60));
+    console.log(\`\\n✓ Submitted: \${results.success.length}\`);
+    results.success.forEach(d => console.log(\`    \${d}\`));
+    console.log(\`\\n⏭ Already done: \${results.skipped.length}\`);
+    results.skipped.forEach(d => console.log(\`    \${d}\`));
+    console.log(\`\\n✗ Failed: \${results.failed.length}\`);
+    results.failed.forEach(d => console.log(\`    \${d}\`));
+    
+    await browser.close();
+    
+    // Exit with error if any failed
+    if (results.failed.length > 0) {
+        process.exit(1);
+    }
+}
+
+main().catch(err => {
+    console.error(err);
+    process.exit(1);

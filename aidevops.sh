@@ -839,6 +839,83 @@ _update_check_homebrew() {
 }
 
 # Update/upgrade command
+_update_git_repo() {
+	local current_version="$1"
+	cd "$INSTALL_DIR" || exit 1
+	local current_branch
+	current_branch=$(git branch --show-current 2>/dev/null || echo "")
+	[[ "$current_branch" != "main" ]] && {
+		print_info "Switching to main branch..."
+		git checkout main --quiet 2>/dev/null || git checkout -b main origin/main --quiet 2>/dev/null || true
+	}
+	if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+		print_info "Cleaning up stale working tree changes..."
+		git reset HEAD -- . 2>/dev/null || true
+		git checkout -- . 2>/dev/null || true
+	fi
+	git fetch origin main --tags --quiet
+	local local_hash
+	local_hash=$(git rev-parse HEAD)
+	local remote_hash
+	remote_hash=$(git rev-parse origin/main)
+	if [[ "$local_hash" == "$remote_hash" ]]; then
+		print_success "Framework already up to date!"
+		local repo_version deployed_version
+		repo_version=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo "unknown")
+		deployed_version=$(cat "$HOME/.aidevops/agents/VERSION" 2>/dev/null || echo "none")
+		if [[ "$repo_version" != "$deployed_version" ]]; then
+			print_warning "Deployed agents ($deployed_version) don't match repo ($repo_version)"
+			print_info "Re-running setup to sync agents..."
+			bash "$INSTALL_DIR/setup.sh" --non-interactive
+		fi
+		git checkout -- . 2>/dev/null || true
+		return 0
+	fi
+
+	print_info "Pulling latest changes..."
+	local old_hash
+	old_hash=$(git rev-parse HEAD)
+	if git pull --ff-only origin main --quiet; then
+		:
+	else
+		print_warning "Fast-forward pull failed — resetting to origin/main..."
+		git reset --hard origin/main --quiet 2>/dev/null || {
+			print_error "Failed to reset to origin/main"
+			print_info "Try: cd $INSTALL_DIR && git fetch origin && git reset --hard origin/main"
+			return 1
+		}
+	fi
+	local new_version new_hash
+	new_version=$(get_version)
+	new_hash=$(git rev-parse HEAD)
+	if [[ "$old_hash" != "$new_hash" ]]; then
+		local total_commits
+		total_commits=$(git rev-list --count "$old_hash..$new_hash" 2>/dev/null || echo "0")
+		if [[ "$total_commits" -gt 0 ]]; then
+			echo ""
+			print_info "Changes since $current_version ($total_commits commits):"
+			git log --oneline "$old_hash..$new_hash" | grep -E '^[a-f0-9]+ (feat|fix|refactor|perf|docs):' | head -20
+			[[ "$total_commits" -gt 20 ]] && echo "  ... and more (run 'git log --oneline' in $INSTALL_DIR for full list)"
+		fi
+	fi
+	echo ""
+	print_info "Running setup to apply changes..."
+	local setup_exit=0
+	bash "$INSTALL_DIR/setup.sh" --non-interactive || setup_exit=$?
+	git checkout -- . 2>/dev/null || true
+	local repo_version deployed_version
+	repo_version=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo "unknown")
+	deployed_version=$(cat "$HOME/.aidevops/agents/VERSION" 2>/dev/null || echo "none")
+	[[ "$setup_exit" -ne 0 ]] && print_warning "Setup exited with code $setup_exit"
+	if [[ "$repo_version" != "$deployed_version" ]]; then
+		print_warning "Agent deployment incomplete: repo=$repo_version, deployed=$deployed_version"
+		print_info "Run 'bash $INSTALL_DIR/setup.sh' manually to deploy agents"
+	else
+		print_success "Updated to version $new_version (agents deployed)"
+	fi
+	return 0
+}
+
 cmd_update() {
 	local skip_project_sync=false
 	local arg
@@ -851,75 +928,7 @@ cmd_update() {
 	print_info "Fetching latest version..."
 
 	if check_dir "$INSTALL_DIR/.git"; then
-		cd "$INSTALL_DIR" || exit 1
-		local current_branch
-		current_branch=$(git branch --show-current 2>/dev/null || echo "")
-		[[ "$current_branch" != "main" ]] && {
-			print_info "Switching to main branch..."
-			git checkout main --quiet 2>/dev/null || git checkout -b main origin/main --quiet 2>/dev/null || true
-		}
-		if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-			print_info "Cleaning up stale working tree changes..."
-			git reset HEAD -- . 2>/dev/null || true
-			git checkout -- . 2>/dev/null || true
-		fi
-		git fetch origin main --tags --quiet
-		local local_hash
-		local_hash=$(git rev-parse HEAD)
-		local remote_hash
-		remote_hash=$(git rev-parse origin/main)
-		if [[ "$local_hash" == "$remote_hash" ]]; then
-			print_success "Framework already up to date!"
-			local repo_version deployed_version
-			repo_version=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo "unknown")
-			deployed_version=$(cat "$HOME/.aidevops/agents/VERSION" 2>/dev/null || echo "none")
-			if [[ "$repo_version" != "$deployed_version" ]]; then
-				print_warning "Deployed agents ($deployed_version) don't match repo ($repo_version)"
-				print_info "Re-running setup to sync agents..."
-				bash "$INSTALL_DIR/setup.sh" --non-interactive
-			fi
-			git checkout -- . 2>/dev/null || true
-		else
-			print_info "Pulling latest changes..."
-			local old_hash
-			old_hash=$(git rev-parse HEAD)
-			if git pull --ff-only origin main --quiet; then
-				:
-			else
-				print_warning "Fast-forward pull failed — resetting to origin/main..."
-				git reset --hard origin/main --quiet 2>/dev/null || {
-					print_error "Failed to reset to origin/main"
-					print_info "Try: cd $INSTALL_DIR && git fetch origin && git reset --hard origin/main"
-					return 1
-				}
-			fi
-			local new_version new_hash
-			new_version=$(get_version)
-			new_hash=$(git rev-parse HEAD)
-			if [[ "$old_hash" != "$new_hash" ]]; then
-				local total_commits
-				total_commits=$(git rev-list --count "$old_hash..$new_hash" 2>/dev/null || echo "0")
-				if [[ "$total_commits" -gt 0 ]]; then
-					echo ""
-					print_info "Changes since $current_version ($total_commits commits):"
-					git log --oneline "$old_hash..$new_hash" | grep -E '^[a-f0-9]+ (feat|fix|refactor|perf|docs):' | head -20
-					[[ "$total_commits" -gt 20 ]] && echo "  ... and more (run 'git log --oneline' in $INSTALL_DIR for full list)"
-				fi
-			fi
-			echo ""
-			print_info "Running setup to apply changes..."
-			local setup_exit=0
-			bash "$INSTALL_DIR/setup.sh" --non-interactive || setup_exit=$?
-			git checkout -- . 2>/dev/null || true
-			local repo_version deployed_version
-			repo_version=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo "unknown")
-			deployed_version=$(cat "$HOME/.aidevops/agents/VERSION" 2>/dev/null || echo "none")
-			[[ "$setup_exit" -ne 0 ]] && print_warning "Setup exited with code $setup_exit"
-			if [[ "$repo_version" != "$deployed_version" ]]; then
-				print_warning "Agent deployment incomplete: repo=$repo_version, deployed=$deployed_version"
-				print_info "Run 'bash $INSTALL_DIR/setup.sh' manually to deploy agents"
-			else print_success "Updated to version $new_version (agents deployed)"; fi
-		fi
+		_update_git_repo "$current_version" || return 1
 	else
 		_update_fresh_install || return 1
 	fi
@@ -3504,6 +3513,42 @@ _dispatch_config() {
 	return 0
 }
 
+cmd_security() {
+	case "${1:-}" in
+	"")
+		# No args: run ALL security checks (posture + hygiene + advisories)
+		echo ""
+		echo "Running full security assessment..."
+		echo "==================================="
+		echo ""
+		_dispatch_helper "security-posture-helper.sh" "security-posture-helper.sh" status || true
+		echo ""
+		_dispatch_helper "secret-hygiene-helper.sh" "secret-hygiene-helper.sh" scan || true
+		;;
+	scan | scan-secrets | scan-pth | scan-deps | dismiss)
+		_dispatch_helper "secret-hygiene-helper.sh" "secret-hygiene-helper.sh" "$@"
+		;;
+	hygiene)
+		shift
+		_dispatch_helper "secret-hygiene-helper.sh" "secret-hygiene-helper.sh" "${@:-scan}"
+		;;
+	posture | setup)
+		shift || true
+		_dispatch_helper "security-posture-helper.sh" "security-posture-helper.sh" "${@:-setup}"
+		;;
+	status)
+		# Status shows both posture and hygiene summary
+		_dispatch_helper "security-posture-helper.sh" "security-posture-helper.sh" status || true
+		echo ""
+		_dispatch_helper "secret-hygiene-helper.sh" "secret-hygiene-helper.sh" startup-check || true
+		;;
+	*)
+		_dispatch_helper "security-posture-helper.sh" "security-posture-helper.sh" "$@"
+		;;
+	esac
+	return 0
+}
+
 # Main entry point
 main() {
 	local command="${1:-help}"
@@ -3547,40 +3592,7 @@ main() {
 	sources | agent-sources) _dispatch_helper "agent-sources-helper.sh" "agent-sources-helper.sh" "$@" ;;
 	plugin | plugins) cmd_plugin "$@" ;;
 	pulse) _dispatch_helper "pulse-session-helper.sh" "pulse-session-helper.sh" "$@" ;;
-	security)
-		case "${1:-}" in
-		"")
-			# No args: run ALL security checks (posture + hygiene + advisories)
-			echo ""
-			echo "Running full security assessment..."
-			echo "==================================="
-			echo ""
-			_dispatch_helper "security-posture-helper.sh" "security-posture-helper.sh" status || true
-			echo ""
-			_dispatch_helper "secret-hygiene-helper.sh" "secret-hygiene-helper.sh" scan || true
-			;;
-		scan | scan-secrets | scan-pth | scan-deps | dismiss)
-			_dispatch_helper "secret-hygiene-helper.sh" "secret-hygiene-helper.sh" "$@"
-			;;
-		hygiene)
-			shift
-			_dispatch_helper "secret-hygiene-helper.sh" "secret-hygiene-helper.sh" "${@:-scan}"
-			;;
-		posture | setup)
-			shift || true
-			_dispatch_helper "security-posture-helper.sh" "security-posture-helper.sh" "${@:-setup}"
-			;;
-		status)
-			# Status shows both posture and hygiene summary
-			_dispatch_helper "security-posture-helper.sh" "security-posture-helper.sh" status || true
-			echo ""
-			_dispatch_helper "secret-hygiene-helper.sh" "secret-hygiene-helper.sh" startup-check || true
-			;;
-		*)
-			_dispatch_helper "security-posture-helper.sh" "security-posture-helper.sh" "$@"
-			;;
-		esac
-		;;
+	security) cmd_security "$@" ;;
 	doctor | doc) _dispatch_helper "doctor-helper.sh" "doctor-helper.sh" "$@" ;;
 	detect | scan) cmd_detect ;;
 	ip-check | ip_check) _dispatch_helper "ip-reputation-helper.sh" "ip-reputation-helper.sh" "$@" ;;

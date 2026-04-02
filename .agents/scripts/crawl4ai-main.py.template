@@ -1,0 +1,24 @@
+async def main():
+    """Main function to run examples"""
+    print("CapSolver + Crawl4AI Integration Examples")
+    print("=" * 50)
+
+    try:
+        print("\nExample 1: reCAPTCHA v2")
+        result1 = await solve_recaptcha_v2_example()
+
+        print("\nExample 2: Cloudflare Turnstile")
+        result2 = await solve_cloudflare_turnstile_example()
+
+        print("\nAll examples completed successfully!")
+
+    except Exception as e:
+        print(f"Error: {e}")
+        print("Make sure to set your CapSolver API key!")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+EOF
+	return 0
+}
+

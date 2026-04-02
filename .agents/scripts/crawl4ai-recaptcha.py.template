@@ -1,0 +1,47 @@
+        verbose=True,
+        headless=False,
+        use_persistent_context=True,
+    )
+
+    async with AsyncWebCrawler(config=browser_config) as crawler:
+        await crawler.arun(
+            url=site_url,
+            cache_mode=CacheMode.BYPASS,
+            session_id="captcha_session"
+        )
+
+        print("Solving reCAPTCHA v2...")
+        solution = capsolver.solve({
+            "type": "ReCaptchaV2TaskProxyLess",
+            "websiteURL": site_url,
+            "websiteKey": site_key,
+        })
+        token = solution["gRecaptchaResponse"]
+        print(f"Token obtained: {token[:50]}...")
+
+        js_code = f"""
+            const textarea = document.getElementById('g-recaptcha-response');
+            if (textarea) {{
+                textarea.value = '{token}';
+                document.querySelector('button.form-field[type="submit"]').click();
+            }}
+        """
+
+        wait_condition = """() => {
+            const items = document.querySelectorAll('h2');
+            return items.length > 1;
+        }"""
+
+        run_config = CrawlerRunConfig(
+            cache_mode=CacheMode.BYPASS,
+            session_id="captcha_session",
+            js_code=js_code,
+            js_only=True,
+            wait_for=f"js:{wait_condition}"
+        )
+
+        result = await crawler.arun(url=site_url, config=run_config)
+        print("CAPTCHA solved successfully!")
+        return result.markdown
+
+EOF

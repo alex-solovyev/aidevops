@@ -138,48 +138,15 @@ get_template_json() {
 	local subject="$2"
 	local concept="$3"
 
-	case "$template_name" in
-	high-contrast-face)
-		cat <<EOF
-{
-  "subject": "$subject",
-  "concept": "$concept",
-  "composition": {
-    "framing": "close-up",
-    "angle": "eye-level",
-    "rule_of_thirds": true,
-    "focal_point": "face and eyes",
-    "depth_of_field": "shallow"
-  },
-  "lighting": {
-    "type": "studio",
-    "direction": "three-point",
-    "quality": "soft diffused",
-    "color_temperature": "neutral (5500K)",
-    "mood": "high contrast"
-  },
-  "color": {
-    "palette": ["#FF6B35", "#004E89", "#FFFFFF"],
-    "dominant": "#004E89",
-    "accent": "#FF6B35",
-    "saturation": "vibrant",
-    "harmony": "complementary"
-  },
-  "style": {
-    "aesthetic": "editorial",
-    "texture": "digital clean",
-    "post_processing": "light grading",
-    "reference": "Professional YouTube thumbnail"
-  },
-  "technical": {
-    "camera": "Canon R5",
-    "lens": "85mm f/1.2",
-    "settings": "f/1.8, 1/200s, ISO 200",
-    "resolution": "4K",
-    "aspect_ratio": "16:9"
-  },
-  "negative": "blurry, low quality, distorted, watermark, text overlay, multiple faces, cluttered background"
+	local template_file="$SCRIPT_DIR/thumbnail-${template_name}.json.template"
+	if [[ -f "$template_file" ]]; then
+		sed "s|\$subject|${subject}|g; s|\$concept|${concept}|g" "$template_file"
+	else
+		return 1
+	fi
+	return 0
 }
+
 EOF
 		;;
 	text-heavy)
@@ -532,6 +499,11 @@ _score_calculate_and_save() {
 		print_warning "✗ FAIL - Score below threshold (< $MIN_SCORE_THRESHOLD) - regenerate recommended"
 	fi
 
+	local status="FAIL"
+	if (($(echo "$weighted_score >= $MIN_SCORE_THRESHOLD" | bc -l))); then
+		status="PASS"
+	fi
+
 	local score_file="${image_path%.png}_score.txt"
 	score_file="${score_file%.jpg}_score.txt"
 	cat >"$score_file" <<EOF
@@ -550,7 +522,7 @@ Criteria Scores:
 
 Weighted Score: $weighted_score / 10
 Threshold: $MIN_SCORE_THRESHOLD
-Status: $(if (($(echo "$weighted_score >= $MIN_SCORE_THRESHOLD" | bc -l))); then echo "PASS"; else echo "FAIL"; fi)
+Status: $status
 EOF
 
 	print_info "Score saved to: $score_file"

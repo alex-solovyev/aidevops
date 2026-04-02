@@ -1,0 +1,39 @@
+{
+  "subject": "$subject centered on clean background",
+  "concept": "$concept",
+  "composition": {
+    "framing": "medium shot",
+    "angle": "slightly high angle",
+    "rule_of_thirds": false,
+    "focal_point": "centered product",
+    "depth_of_field": "medium"
+  },
+  "lighting": {
+    "type": "studio",
+    "direction": "three-point",
+    "quality": "soft diffused",
+    "color_temperature": "neutral (5500K)",
+    "mood": "bright and airy"
+  },
+  "color": {
+    "palette": ["#FFFFFF", "#2C3E50", "#3498DB"],
+    "dominant": "#FFFFFF",
+    "accent": "#3498DB",
+    "saturation": "muted",
+    "harmony": "monochromatic"
+  },
+  "style": {
+    "aesthetic": "photorealistic",
+    "texture": "smooth",
+    "post_processing": "light grading",
+    "reference": "Product photography"
+  },
+  "technical": {
+    "camera": "Sony A7IV",
+    "lens": "50mm f/1.8",
+    "settings": "f/2.8, 1/250s, ISO 400",
+    "resolution": "4K",
+    "aspect_ratio": "16:9"
+  },
+  "negative": "blurry, low quality, cluttered background, text overlay, watermark, multiple products"
+}

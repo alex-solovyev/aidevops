@@ -134,29 +134,26 @@ sanitize_sitemap_path() {
 
 create_submit_script() {
 	local domains_json="$1"
-	local sitemap_path
-	sitemap_path="$(sanitize_sitemap_path "$2")"
+	local sitemap_path="$2"
 	local dry_run="$3"
 	local headless="$4"
 	local timeout="$5"
-
 	local chrome_profile
-	chrome_profile="$(get_chrome_profile_path)"
+	chrome_profile=$(get_chrome_profile_path)
 
-	cat >"${GSC_SCRIPT}" <<SCRIPT
-import { chromium } from 'playwright';
+	# Use sed to replace variables in the template
+	sed "s|\${domains_json}|${domains_json}|g; \
+	     s|\${sitemap_path}|${sitemap_path}|g; \
+	     s|\${dry_run}|${dry_run}|g; \
+	     s|\${headless}|${headless}|g; \
+	     s|\${TIMEOUT}|${timeout}|g; \
+	     s|\${SCREENSHOT_DIR}|${SCREENSHOT_DIR}|g; \
+	     s|\${chrome_profile}|${chrome_profile}|g" \
+	     "$SCRIPT_DIR/gsc-sitemap-submit.js.template" > "${GSC_SCRIPT}"
 
-const DOMAINS = ${domains_json};
-const SITEMAP_PATH = "${sitemap_path}";
-const DRY_RUN = ${dry_run};
-const HEADLESS = ${headless};
-const TIMEOUT = ${timeout};
-const SCREENSHOT_DIR = "${SCREENSHOT_DIR}";
-
-async function waitForGSCLoad(page) {
-    await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+	return 0
 }
+
 
 async function main() {
     console.log("=".repeat(60));
@@ -345,30 +342,18 @@ SCRIPT
 }
 
 create_status_script() {
-	local domain
-	domain="$(sanitize_domain "$1")"
+	local domain="$1"
 	local chrome_profile
-	chrome_profile="$(get_chrome_profile_path)"
+	chrome_profile=$(get_chrome_profile_path)
 
-	cat >"${GSC_SCRIPT}" <<SCRIPT
-import { chromium } from 'playwright';
+	# Use sed to replace variables in the template
+	sed "s|\${domain}|${domain}|g; \
+	     s|\${chrome_profile}|${chrome_profile}|g" \
+	     "$SCRIPT_DIR/gsc-sitemap-status.js.template" > "${GSC_SCRIPT}"
 
-const DOMAIN = "${domain}";
+	return 0
+}
 
-async function main() {
-    const browser = await chromium.launchPersistentContext(
-        '${chrome_profile}',
-        { 
-            headless: false, 
-            channel: 'chrome',
-            ignoreDefaultArgs: ['--enable-automation'],
-            args: [
-                '--disable-blink-features=AutomationControlled',
-                '--disable-infobars',
-                '--no-first-run',
-                '--no-default-browser-check'
-            ]
-        }
     );
     
     const page = await browser.newPage();
@@ -679,15 +664,7 @@ cmd_setup() {
 	# Create config file if it doesn't exist
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		mkdir -p "$(dirname "$CONFIG_FILE")"
-		cat >"$CONFIG_FILE" <<'CONFIG'
-{
-  "chrome_profile_dir": "~/.aidevops/.agent-workspace/chrome-gsc-profile",
-  "default_sitemap_path": "sitemap.xml",
-  "screenshot_dir": "~/.aidevops/.agent-workspace/gsc-screenshots",
-  "timeout_ms": 60000,
-  "headless": false
-}
-CONFIG
+		cat "$SCRIPT_DIR/gsc-sitemap-config.json.template" >"$CONFIG_FILE"
 		log_success "Created config file: $CONFIG_FILE"
 	fi
 

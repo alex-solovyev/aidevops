@@ -1,0 +1,39 @@
+{
+  "subject": "$subject with surprised or shocked expression",
+  "concept": "$concept",
+  "composition": {
+    "framing": "close-up",
+    "angle": "slightly low angle",
+    "rule_of_thirds": true,
+    "focal_point": "face with exaggerated emotion",
+    "depth_of_field": "shallow"
+  },
+  "lighting": {
+    "type": "dramatic",
+    "direction": "side",
+    "quality": "hard direct",
+    "color_temperature": "warm (3000K)",
+    "mood": "dark and moody"
+  },
+  "color": {
+    "palette": ["#FF006E", "#8338EC", "#FFBE0B"],
+    "dominant": "#8338EC",
+    "accent": "#FF006E",
+    "saturation": "vibrant",
+    "harmony": "triadic"
+  },
+  "style": {
+    "aesthetic": "cinematic",
+    "texture": "film grain",
+    "post_processing": "heavy grading",
+    "reference": "Clickbait YouTube thumbnail"
+  },
+  "technical": {
+    "camera": "RED Komodo 6K",
+    "lens": "35mm f/1.4",
+    "settings": "f/2.0, 1/50s, ISO 800",
+    "resolution": "4K",
+    "aspect_ratio": "16:9"
+  },
+  "negative": "blurry, low quality, neutral expression, boring, text overlay, watermark"
+}

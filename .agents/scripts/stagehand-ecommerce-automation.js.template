@@ -1,0 +1,78 @@
+// E-commerce Automation with Stagehand
+// Product research and price comparison
+
+import { Stagehand } from "@browserbasehq/stagehand";
+import { z } from "zod";
+import fs from 'fs';
+
+const ProductSchema = z.object({
+    name: z.string().describe("Product name"),
+    price: z.number().describe("Price in USD"),
+    rating: z.number().describe("Star rating out of 5"),
+    reviewCount: z.number().describe("Number of reviews"),
+    availability: z.string().describe("Stock status"),
+    imageUrl: z.string().optional().describe("Product image URL")
+});
+
+async function searchProducts(query, maxResults = 5) {
+    const stagehand = new Stagehand({
+        env: "LOCAL",
+        verbose: 1,
+        headless: false
+    });
+
+    try {
+        await stagehand.init();
+        
+        // Navigate to Amazon (example)
+        await stagehand.page.goto("https://amazon.com");
+        
+        // Search for products
+        await stagehand.act(`search for "${query}"`);
+        
+        // Wait for results to load
+        await stagehand.page.waitForTimeout(2000);
+        
+        // Extract product information
+        const products = await stagehand.extract(
+            `extract the first ${maxResults} products with their details`,
+            z.array(ProductSchema)
+        );
+        
+        // Save results to file
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `product-search-${query.replace(/\s+/g, '-')}-${timestamp}.json`;
+        const filepath = `${process.env.HOME}/.aidevops/stagehand/results/${filename}`;
+        
+        // Ensure results directory exists
+        fs.mkdirSync(`${process.env.HOME}/.aidevops/stagehand/results`, { recursive: true });
+        fs.writeFileSync(filepath, JSON.stringify(products, null, 2));
+        
+        console.log(`Found ${products.length} products:`);
+        products.forEach((product, index) => {
+            console.log(`${index + 1}. ${product.name} - $${product.price} (${product.rating}⭐)`);
+        });
+        
+        console.log(`Results saved to: ${filepath}`);
+        return products;
+        
+    } catch (error) {
+        console.error("Error during product search:", error);
+        throw error;
+    } finally {
+        await stagehand.close();
+    }
+    return 0
+}
+
+// Example usage
+if (import.meta.url === `file://${process.argv[1]}`) {
+    const query = process.argv[2] || "wireless headphones";
+    const maxResults = parseInt(process.argv[3]) || 5;
+    
+    searchProducts(query, maxResults)
+        .then(() => console.log("Product search completed"))
+        .catch(console.error);
+}
+
+export { searchProducts };

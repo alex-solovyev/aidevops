@@ -1,0 +1,77 @@
+import { chromium } from 'playwright';
+
+const DOMAIN = "${domain}";
+
+async function main() {
+    const browser = await chromium.launchPersistentContext(
+        '${chrome_profile}',
+        { 
+            headless: false, 
+            channel: 'chrome',
+            ignoreDefaultArgs: ['--enable-automation'],
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-infobars',
+                '--no-first-run',
+                '--no-default-browser-check'
+            ]
+        }
+    );
+    
+    const page = await browser.newPage();
+    const gscUrl = \`https://search.google.com/search-console/sitemaps?resource_id=sc-domain:\${DOMAIN}\`;
+    
+    console.log(\`Checking sitemap status for \${DOMAIN}...\`);
+    await page.goto(gscUrl, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.waitForTimeout(2000);
+    
+    const pageContent = await page.content();
+    
+    if (pageContent.includes("don't have access")) {
+        console.log("❌ No access to this property");
+        await browser.close();
+        process.exit(1);
+    }
+    
+    // Look for sitemaps in the table
+    const sitemapRows = await page.\$\$('tr:has-text("sitemap")');
+    
+    if (sitemapRows.length === 0) {
+        console.log("📭 No sitemaps submitted yet");
+    } else {
+        console.log(\`📋 Found \${sitemapRows.length} sitemap(s):\`);
+        for (const row of sitemapRows) {
+            const text = await row.textContent();
+            console.log(\`   • \${text.trim()}\`);
+        }
+    }
+    
+    await browser.close();
+}
+
+main().catch(err => {
+    console.error(err);
+    process.exit(1);
+});
+SCRIPT
+	return 0
+}
+
+create_login_script() {
+	local chrome_profile
+	chrome_profile="$(get_chrome_profile_path)"
+
+	cat >"${GSC_SCRIPT}" <<SCRIPT
+import { chromium } from 'playwright';
+
+async function main() {
+    console.log("Opening Chrome for Google login...");
+    console.log("Please log into your Google account in the browser.");
+    console.log("Close the browser when done.");
+    
+    const browser = await chromium.launchPersistentContext(
+        '${chrome_profile}',
+        { 
+            headless: false, 
+            channel: 'chrome',
+            ignoreDefaultArgs: ['--enable-automation'],
