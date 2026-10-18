@@ -473,6 +473,33 @@ _repo_is_contributor() {
 	return $?
 }
 
+# Upstream mirrors (string mirror_upstream; boolean is a privacy marker only) and
+# explicit `badges: false` registrations never get badge writes.
+_repo_badges_opted_out() {
+	local _slug="$1"
+	[[ -f "$REPOS_JSON" ]] || return 1
+	jq -e --arg slug "$_slug" \
+		'first(.initialized_repos[]? | select(.slug == $slug)) |
+		 (((.mirror_upstream | type) == "string" and .mirror_upstream != "") or .badges == false)' \
+		"$REPOS_JSON" >/dev/null 2>&1
+	return $?
+}
+
+# _registry_skip_reason <slug> — prints why the registry forbids badge writes.
+# Returns 0 when the repo must be skipped, 1 when writes may proceed.
+_registry_skip_reason() {
+	local _slug="$1"
+	if _repo_is_contributor "$_slug"; then
+		printf '%s\n' "contributor role — sync is read-only"
+		return 0
+	fi
+	if _repo_badges_opted_out "$_slug"; then
+		printf '%s\n' "upstream mirror or badges: false — README left alone"
+		return 0
+	fi
+	return 1
+}
+
 # _apply_repo runs as an isolated transaction. Failures retain the worktree and
 # branch for recovery; successful/no-op runs request guarded removal, never force.
 _apply_repo() (
@@ -575,9 +602,9 @@ _process_rows() {
 		[[ -z "$_slug" ]] && continue
 		# Never touch aidevops itself
 		[[ "$_slug" == "marcusquinn/aidevops" ]] && continue
-		if _repo_is_contributor "$_slug"; then
-			local _result="${_slug}	${_STATUS_SKIPPED}	contributor role — sync is read-only"
-			_print_result_row "$_json_out" "$_result"
+		local _skip_reason
+		if _skip_reason=$(_registry_skip_reason "$_slug"); then
+			_print_result_row "$_json_out" "${_slug}	${_STATUS_SKIPPED}	${_skip_reason}"
 			_COUNT_SKIPPED=$((_COUNT_SKIPPED + 1))
 			continue
 		fi
