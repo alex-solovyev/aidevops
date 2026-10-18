@@ -234,6 +234,7 @@ run_merge_guard_api_uncertainty_test() (
 run_http_classification_test() (
 	local mode="missing"
 	local rc=0
+	local output="" operation=""
 	gh() {
 		if [[ " $* " != *" --include "* ]]; then
 			return 1
@@ -248,6 +249,10 @@ run_http_classification_test() (
 		stderr-untrusted-status) printf 'diagnostic: mentions (HTTP 404)\n' >&2 ;;
 		stderr-server-error) printf 'gh: Service Unavailable (HTTP 503)\n' >&2 ;;
 		cooldown) printf '[gh-cooldown] secondary-rate-limit active=true skip=read\n' >&2 ;;
+		primary-cooldown) printf '[gh-cooldown] primary-core active=true retry_at=1900000000\n' >&2 ;;
+		quota) printf 'gh: API rate limit exceeded SECRET_BODY (HTTP 403)\n' >&2 ;;
+		headers) printf 'HTTP/2.0 403 Forbidden\nX-RateLimit-Remaining: 0\nX-RateLimit-Reset: 1900000000\n\nSECRET_BODY\n' ;;
+		secondary) printf 'HTTP/2.0 429 Too Many Requests\nRetry-After: 60\n\nSECRET_BODY\n' ;;
 		unknown) printf 'gh: connection unavailable\n' >&2 ;;
 		*) return 1 ;;
 		esac
@@ -263,7 +268,7 @@ run_http_classification_test() (
 	rc=0
 	_release_lane_remote_head test/repo >/dev/null 2>&1 || rc=$?
 	[[ "$rc" -eq 2 ]] || return 1
-	for mode in stderr-unauthorized stderr-forbidden stderr-reflected-status stderr-untrusted-status cooldown unknown; do
+	for mode in stderr-unauthorized stderr-forbidden stderr-reflected-status stderr-untrusted-status unknown; do
 		rc=0
 		_release_lane_remote_head test/repo >/dev/null 2>&1 || rc=$?
 		[[ "$rc" -eq 1 ]] || return 1
@@ -272,6 +277,68 @@ run_http_classification_test() (
 	rc=0
 	_release_lane_remote_head test/repo >/dev/null 2>&1 || rc=$?
 	[[ "$rc" -eq 75 ]] || return 1
+	for mode in cooldown primary-cooldown quota headers secondary; do
+		for operation in head read write; do
+			rc=0
+			case "$operation" in
+			head) output=$(_release_lane_remote_head test/repo 2>&1) || rc=$? ;;
+			read) output=$(_release_lane_api state-read true --include test/endpoint 2>&1) || rc=$? ;;
+			write) output=$(_release_lane_api ref-update false --include test/endpoint 2>&1) || rc=$? ;;
+			esac
+			[[ "$rc" -eq 76 && "$output" == *"rate_limited=true"* &&
+				"$output" == *"GitHub API quota exhausted; rerun after"* &&
+				"$output" != *"SECRET_BODY"* && "$output" != *"retryable=false"* ]] || return 1
+			if [[ "$mode" == "headers" || "$mode" == "primary-cooldown" ]]; then
+				[[ "$output" == *"retry_after=1900000000"* ]] || return 1
+			fi
+		done
+	done
+	# Quota on the first request must stop without issuing a second request.
+	gh() {
+		[[ " $* " != *" --include "* ]] || return 1
+		printf 'gh: API rate limit exceeded (HTTP 403)\n' >&2
+		return 1
+	}
+	rc=0
+	output=$(_release_lane_remote_head test/repo 2>&1) || rc=$?
+	[[ "$rc" -eq 76 && "$output" == *"rate_limited=true"* ]] || return 1
+	return 0
+)
+
+run_reconcile_quota_test() (
+	# Source the production caller through its existing help-only entry point.
+	# shellcheck source=../full-loop-release-helper.sh
+	source "${SCRIPT_DIR}/full-loop-release-helper.sh" help >/dev/null || return 1
+	# Earlier ownership cases replace release_lane_read; restore production code
+	# within this subshell before exercising the real caller and transport path.
+	unset _AIDEVOPS_RELEASE_LANE_LOADED
+	# shellcheck source=../release-lane-helper.sh
+	source "${SCRIPT_DIR}/release-lane-helper.sh" || return 1
+	local mode="quota" output="" rc=0
+	_full_loop_resolve_repo() {
+		printf 'test/repo\n'
+		return 0
+	}
+	gh() {
+		case "$mode" in
+		quota) printf 'gh: API rate limit exceeded PRIVATE_BODY (HTTP 403)\n' >&2 ;;
+		cooldown) printf '[gh-cooldown] primary-core active=true retry_at=1900000000\n' >&2 ;;
+		permission) printf 'gh: Forbidden PRIVATE_BODY (HTTP 403)\n' >&2 ;;
+		esac
+		return 1
+	}
+	for mode in quota cooldown permission; do
+		rc=0
+		output=$(_full_loop_release_existing_with_lane reconcile 101 2>&1) || rc=$?
+		[[ "$output" != *"PRIVATE_BODY"* ]] || return 1
+		if [[ "$mode" == "permission" ]]; then
+			[[ "$rc" -eq 1 && "$output" == *"retryable=false"* &&
+				"$output" == *"Cannot verify repository release lane"* ]] || return 1
+		else
+			[[ "$rc" -eq 76 && "$output" == *"GitHub API quota exhausted"* &&
+				"$output" != *"Cannot verify repository release lane"* ]] || return 1
+		fi
+	done
 	return 0
 )
 
@@ -922,6 +989,7 @@ if run_setup_guard_cache_fallback_test; then assert_result 'setup uses only vali
 if run_merge_guard_test; then assert_result 'publisher lane never blocks ordinary merges' true; else assert_result 'publisher lane never blocks ordinary merges' false; fi
 if run_merge_guard_api_uncertainty_test; then assert_result 'unavailable publisher lane does not freeze merges' true; else assert_result 'unavailable publisher lane does not freeze merges' false; fi
 if run_http_classification_test; then assert_result 'only verified HTTP 404 is classified as an absent lane' true; else assert_result 'only verified HTTP 404 is classified as an absent lane' false; fi
+if run_reconcile_quota_test; then assert_result 'reconcile distinguishes quota and cooldown from genuine permission failures' true; else assert_result 'reconcile distinguishes quota and cooldown from genuine permission failures' false; fi
 if run_legacy_and_api_failure_test; then assert_result 'legacy absent lane remains compatible while API uncertainty permits only generic setup' true; else assert_result 'legacy absent lane remains compatible while API uncertainty permits only generic setup' false; fi
 if run_default_stale_boundary_and_fencing_test; then assert_result 'default stale recovery adopts at 299s, reclaims at 300s, and fences the prior owner' true; else assert_result 'default stale recovery adopts at 299s, reclaims at 300s, and fences the prior owner' false; fi
 if run_stale_reclamation_guard_test; then assert_result 'preparing, tagged, and receipted lanes remain reconcile-only' true; else assert_result 'preparing, tagged, and receipted lanes remain reconcile-only' false; fi
