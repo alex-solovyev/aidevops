@@ -10,6 +10,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.44] - 2026-10-18
+
+### Added
+
+- add opt-in Cloudron catalog publication workflow
+- Add Linkup web search API docs and AI web search API comparison
+
+### Changed
+
+- Maintenance: sync GitHub issue refs to TODO.md (#35030)
+- Maintenance: mark t18718 complete (pr:#35015 completed:2026-10-18) (#35017)
+- Maintenance: sync GitHub issue refs to TODO.md (#35018)
+- Maintenance: mark t18719 complete (pr:#35016 completed:2026-10-18) (#35009)
+- Maintenance: sync GitHub issue refs to TODO.md (#35010)
+- CI: annotate linked-issue-check pull_request_target (#35006)
+- Maintenance: mark t18716 complete (pr:#34990 completed:2026-10-18) (#34995)
+- Maintenance: sync GitHub issue refs to TODO.md (#34994)
+- Maintenance: mark t18713 complete (pr:#34962 completed:2026-10-18) (#34966)
+- Documentation: explain Qlty SARIF regression diagnosis (GH#34963) (#34964)
+- Maintenance: sync GitHub issue refs to TODO.md (#34967)
+
+### Fixed
+
+- fix badge drift detector and skip managed refresh callers for Actions badge
+- task-id-normalize ignores HTML-commented examples; normalizes ranges as a unit
+- enforce README badge layout and require helper-managed blocks in /readme
+- explain unregistered repositories (#35001)
+- verify Cloudron manifest file references at source commit (#35002)
+- preserve passphrase-less headless signing in SSH audits (#34991)
+- classify MCP credential-file references (#34980)
+- use scoped TODO union merge driver (#34962)
+- coolify-helper hyphenated server keys via jq --arg (GH#34957) (#34959)
+
 ## [3.39.43] - 2026-10-18
 
 ### Fixed
