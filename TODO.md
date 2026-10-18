@@ -1716,7 +1716,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 - [ ] t18723 fix(badges): derive owned repos from repos.json instead of hard-coded org allowlist #auto-dispatch #bug ref:GH#35032 -> [todo/tasks/t18723-brief.md]
 - [x] t18730 docs(readme): put languages chart on its own line in README badge row #bug ref:GH#35058 -> [todo/tasks/t18730-brief.md] pr:#35061 completed:2026-10-18
 
-- [ ] t18727 fix: test-release-snapshot-migration.sh exits 1 silently in _full_loop_release_start_new block #auto-dispatch #bug ref:GH#35045
+- [-] t18727 fix: test-release-snapshot-migration.sh exits 1 silently in _full_loop_release_start_new block #auto-dispatch #bug ref:GH#35045 declined:2026-10-18
 
 - [ ] t18728 fix: exact cmd_add owner contract no longer provisions node_modules in test-worktree-js-dependency-bootstrap.sh #auto-dispatch #bug ref:GH#35047
 
