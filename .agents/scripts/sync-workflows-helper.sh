@@ -49,6 +49,9 @@ fi
 # shellcheck source=./scratch-worktree-helper.sh
 source "$SELF_DIR/scratch-worktree-helper.sh"
 
+# shellcheck source=./workflow-release-ref.sh
+source "$SELF_DIR/workflow-release-ref.sh"
+
 # shellcheck source=/dev/null
 # gh wrappers inject signature footers and route around GraphQL rate limits.
 # Mandatory — this script ships as part of aidevops so the wrappers are
@@ -546,6 +549,8 @@ _mirror_supports_helper_provenance() {
 	local _ref="$3"
 	local _path _reusable_path _reusable_content
 	local -a _reusable_paths
+	# YAML release comments are display metadata, not part of the Git object name.
+	_ref="${_ref%% #*}"
 	_path=$(jq -r --arg s "$_repo" \
 		'.initialized_repos[]? | select(.slug == $s) | .path // empty' \
 		"$REPOS_JSON" 2>/dev/null | head -n 1)
@@ -617,9 +622,15 @@ _workflow_reusable_ref_for_slug() {
 # an explicit --ref wins, otherwise the repos.json/default reusable ref.
 _sync_target_ref_for_slug() {
 	local _slug="$1"
+	local _status="${2:-}" _workflow_name="${3:-}"
 	local _ref
 	if [[ -n "${_OPT_TARGET_REF:-}" ]]; then
 		_ref="${_OPT_TARGET_REF#@}"
+	elif [[ "$_status" == "NO-WORKFLOW" && "$_workflow_name" == "loc-badge" &&
+		-z "$(_read_workflow_reusable_field "$_slug" "workflow_reusable_ref")" ]]; then
+		local _repo
+		_repo=$(_workflow_reusable_repo_for_slug "$_slug") || return 1
+		_ref=$(workflow_release_ref "$_repo") || return 1
 	else
 		_ref=$(_workflow_reusable_ref_for_slug "$_slug") || return 1
 	fi
@@ -1637,7 +1648,11 @@ _process_rows() {
 		_target_repo=$(_workflow_reusable_repo_for_slug "$_slug")
 
 		local _result _effective_ref _target_ref_arg
-		_target_ref_arg=$(_sync_target_ref_for_slug "$_slug")
+		if ! _target_ref_arg=$(_sync_target_ref_for_slug "$_slug" "$_status" "$_workflow_name"); then
+			_warn "$_slug: cannot resolve target release SHA"
+			_any_failed=1
+			continue
+		fi
 		_effective_ref=$(_resolve_effective_ref \
 			"$_status" "$_path/$_workflow_relpath" "$_target_ref_arg" "$_OPT_FORCE_REF")
 		if [[ "$_target_repo" != "$_DEFAULT_WORKFLOW_REUSABLE_REPO" ]] && \
