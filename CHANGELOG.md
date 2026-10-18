@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.45] - 2026-10-18
+
+### Added
+
+- per-repository cost budget override for the cost circuit breaker
+- worktree-safe sync and weekly drift remediation (#35036)
+
+### Changed
+
+- Documentation: define accessible form placeholder defaults (GH#35044) (#35046)
+- Maintenance: mark t18720 complete (pr:#35021 completed:2026-10-18) (#35028)
+- Maintenance: add t18723 badge owned-org detection; t18720 → done
+
+### Fixed
+
+- stop reassign_self/stampless-release churn on stale origin:interactive issues (GH#35035) (#35040)
+- create type:maintenance label before filing Cloudron package findings (#35041)
+
 ## [3.39.44] - 2026-10-18
 
 ### Added
