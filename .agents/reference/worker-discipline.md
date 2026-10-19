@@ -251,6 +251,19 @@ AI brief owner:
    `dependency_change` or `human_decision`). A decision suppresses
    re-assessment for 24h; unchanged blockers are not retried blindly.
 
+Repo-delegated queue policy (GH#35129): before terminal-blocker or
+integration-recovery assessment, run `recovery-policy-helper.sh <repo>`. Exit 0
+returns the actions the repo enabled in its pinned default-branch policy
+section; only those are delegated authority. Exit 3 (none declared) or 1
+(invalid/unavailable) leaves the steps above unchanged. Apply
+[Repo recovery policy](recovery-policy.md) for exhausted-outlier chain holds
+with independent dependant repoints, session-budget splits after a merged
+partial PR, and specifically pre-authorized brief repairs. Record holds with
+`wake=human_decision`, splits/repoints with `wake=dependency_change`, brief
+repairs with `wake=brief_revision`. Entries with `intake: policy_remote` are
+OWNER/MEMBER circuits opened by another runner; use only public issue/PR
+evidence for them.
+
 #### Recoverable policy denials (GH#33969)
 
 A `[NET-TIER]` loopback denial is a routing hint, not a terminal blocker. Never
