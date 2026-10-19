@@ -10,6 +10,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.46] - 2026-10-19
+
+### Added
+
+- evidence-based security audit findings (Phase 1)
+- preserve readiness records in compact archives
+- preserve worktree Git administration (#35114)
+- hostinger-helper cron list/create/delete/output via hPanel API (GH#35094) (#35098)
+- add tailscale-client-qa-helper.sh (t18734)
+- preserve ignored files in compact archives
+
+### Changed
+
+- Refactor: split fast-fail counter out of headless-runtime-failure.sh (GH#35101) (#35104)
+- Maintenance: sync GitHub issue refs to TODO.md (#35085)
+- Maintenance: sync GitHub issue refs to TODO.md (#35072)
+- Maintenance: sync GitHub issue refs to TODO.md (#35070)
+- Maintenance: sync GitHub issue refs to TODO.md (#35063)
+- Maintenance: mark t18730 complete (pr:#35061 completed:2026-10-18) (#35056)
+- Documentation: put languages chart on its own line in README badge row
+- Maintenance: sync GitHub issue refs to TODO.md (#35055)
+
+### Fixed
+
+- exclude commented TODO examples from session-distill active task count
+- scope resumed worker signature metrics to attempt start (#35113)
+- add verified no-code triage check to verify-issue-close-helper (GH#35105) (#35106)
+- guard reusable permission increases and refresh workflow help
+- re-arm first-observation target_code_blocker holds (GH#35095) (#35097)
+- honour own-login runner_capability_unmet observations whatever their association (#35093)
+- release evidence rejects manifests with a binary file:// icon
+- bound sensitive temp retention and clean runtime sidecars (#35084)
+- skip Star History with warning when SYNC_PAT is unset (#35080)
+- repos opt out with badges:false; never sync upstream mirrors
+- fix rootless recovery guidance and documentation
+- report GitHub quota exhaustion in release lane (GH#35074) (#35075)
+- SHA-pin new metrics callers (GH#35068) (#35073)
+- planning-publisher refuses TODO publications that revert parent task lines (GH#35062) (#35067)
+- restore migration fixture and report silent failures (#35069)
+- qlty-cli.sh runs locally without credentials and in linked worktrees
+- make release snapshot migration test host-independent
+- derive owned repos from repos.json maintainer, not hard-coded orgs (t18723) (#35053)
+- isolate worktree bootstrap snapshot fixtures (#35054)
+- cool down worker-reported runner capability gaps (#35042)
+
 ## [3.39.45] - 2026-10-18
 
 ### Added
