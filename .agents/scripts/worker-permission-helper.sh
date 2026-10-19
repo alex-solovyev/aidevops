@@ -436,6 +436,54 @@ permission_apply_block() {
 	done
 }
 
+readonly PERMISSION_CANONICAL_REDIRECT_RC=3
+readonly PERMISSION_CANONICAL_REDIRECT_TEXT="Canonical checkouts are not grantable to workers. Read the same tracked path in your own worktree; install dependencies worktree-locally."
+
+# Succeeds when every captured pattern targets a registered canonical checkout
+# path from repos.json (GH#35139). Patterns are home-sanitized (~/...) in the
+# capture, so both sides are normalized to ~-relative form before comparing.
+permission_targets_canonical_checkout() {
+	local capture_file="$1"
+	local repos_file="${AIDEVOPS_REPOS_FILE:-${REPOS_JSON:-${HOME}/.config/aidevops/repos.json}}"
+	[[ -f "$repos_file" ]] || return 1
+	jq -e -n --arg home "$HOME" --slurpfile repos "$repos_file" --slurpfile capture "$capture_file" '
+		def norm: sub("^" + $home; "~") | sub("/(\\*+)?$"; "") | sub("/\\*+$"; "");
+		def canon: [($repos[0].initialized_repos // [])[] | .path | strings | norm | select(length > 1)];
+		canon as $roots
+		| [$capture[0].requests[].patterns[]?] as $patterns
+		| ($patterns | length) > 0
+		and all($patterns[]; . as $p | ($p | norm) as $n
+			| ($n | contains("/../") | not)
+			and any($roots[]; . as $r | $n == $r or ($n | startswith($r + "/"))))
+	' >/dev/null 2>&1
+	return $?
+}
+
+permission_write_pending_marker() {
+	local work_dir="$1"
+	local issue_number="$2"
+	local repo_slug="$3"
+	local session_key="$4"
+	local request_id="$5"
+	[[ -n "$work_dir" && -d "$work_dir" ]] || return 0
+	local git_dir="" pending_file=""
+	if ! git_dir=$(git -C "$work_dir" rev-parse --absolute-git-dir 2>/dev/null); then
+		permission_record_blocker "$PERMISSION_PERSISTENCE_FAILED_EVENT" "$PERMISSION_BLOCKER_STATUS" \
+			"git_directory_lookup_failed" "$PERMISSION_BLOCKER_TRUE" "$issue_number" "$repo_slug" "$session_key" "$request_id" \
+			"Permission pending marker location could not be resolved"
+		return 1
+	fi
+	pending_file="${git_dir}/aidevops-permission-pending"
+	if ! jq -cn --arg request "$request_id" --arg issue "$issue_number" --arg session "$session_key" \
+		'{request_id: $request, issue: ($issue | tonumber), session: $session}' >"$pending_file"; then
+		permission_record_blocker "$PERMISSION_PERSISTENCE_FAILED_EVENT" "$PERMISSION_BLOCKER_STATUS" \
+			"pending_marker_write_failed" "$PERMISSION_BLOCKER_TRUE" "$issue_number" "$repo_slug" "$session_key" "$request_id" \
+			"Permission pending marker could not be persisted"
+		return 1
+	fi
+	return 0
+}
+
 cmd_request() {
 	local capture_file="" issue_number="" repo_slug="" session_key="" work_dir="" durability=""
 	local request_id="" capability_json="" permission="" tool="" risk_level="" grantable=""
@@ -479,6 +527,13 @@ cmd_request() {
 			"Captured permission request failed validation"
 		return 1
 	fi
+	if permission_targets_canonical_checkout "$capture_file"; then
+		permission_record_blocker "permission_request_redirected" "redirected" \
+			"canonical_checkout_redirect" "false" "$issue_number" "$repo_slug" "$session_key" "" \
+			"$PERMISSION_CANONICAL_REDIRECT_TEXT"
+		printf '%s\n' "$PERMISSION_CANONICAL_REDIRECT_TEXT"
+		return "$PERMISSION_CANONICAL_REDIRECT_RC"
+	fi
 	capability_json="$(permission_blocker_capability_json "$capture_file")" || return 1
 	if permission_capture_is_temp_write_recovery "$capture_file"; then
 		permission_record_blocker "permission_temp_dir_recovery" "recovering" \
@@ -512,23 +567,7 @@ cmd_request() {
 			"Maintainer permission blocker label could not be persisted"
 		return 1
 	fi
-	if [[ -n "$work_dir" && -d "$work_dir" ]]; then
-		local git_dir="" pending_file=""
-		if ! git_dir=$(git -C "$work_dir" rev-parse --absolute-git-dir 2>/dev/null); then
-			permission_record_blocker "$PERMISSION_PERSISTENCE_FAILED_EVENT" "$PERMISSION_BLOCKER_STATUS" \
-				"git_directory_lookup_failed" "$PERMISSION_BLOCKER_TRUE" "$issue_number" "$repo_slug" "$session_key" "$request_id" \
-				"Permission pending marker location could not be resolved"
-			return 1
-		fi
-		pending_file="${git_dir}/aidevops-permission-pending"
-		if ! jq -cn --arg request "$request_id" --arg issue "$issue_number" --arg session "$session_key" \
-			'{request_id: $request, issue: ($issue | tonumber), session: $session}' >"$pending_file"; then
-			permission_record_blocker "$PERMISSION_PERSISTENCE_FAILED_EVENT" "$PERMISSION_BLOCKER_STATUS" \
-				"pending_marker_write_failed" "$PERMISSION_BLOCKER_TRUE" "$issue_number" "$repo_slug" "$session_key" "$request_id" \
-				"Permission pending marker could not be persisted"
-			return 1
-		fi
-	fi
+	permission_write_pending_marker "$work_dir" "$issue_number" "$repo_slug" "$session_key" "$request_id" || return 1
 	permission_record_blocker "permission_awaiting_approval" "$PERMISSION_BLOCKER_STATUS" \
 		"needs_maintainer_permissions" "$PERMISSION_BLOCKER_TRUE" "$issue_number" "$repo_slug" "$session_key" "$request_id" \
 		"Worker paused until the exact scoped permission request is approved" \
