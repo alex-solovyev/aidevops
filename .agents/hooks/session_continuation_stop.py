@@ -22,6 +22,13 @@ Allow the stop (print nothing, exit 0) when any of these hold:
     (with 2+ open todos the blocker pauses only its own path: GH#33888)
   - any input/transcript parse error (fail-open)
 
+GH#35121: when no todo is open, the stop is blocked once (within the same cap)
+if the final message is a closeout that asks for nothing (What next block or
+completion claim) while files this session's Edit/Write/MultiEdit/NotebookEdit
+calls changed remain uncommitted. Only those paths are checked with live
+`git status`; Bash-originated edits and unrelated dirty files are ignored.
+Logic lives in the companion session_capture_check.py.
+
 Installed by: install-hooks-helper.sh (setup.sh) and update-claude-settings.py
 Location: ~/.aidevops/hooks/session_continuation_stop.py
 Configured in: ~/.claude/settings.json (hooks.Stop)
@@ -74,6 +81,14 @@ NO_ASK_RE = re.compile(r"^(?:none|nothing|n/a)\b", re.IGNORECASE)
 CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 CODE_SPAN_RE = re.compile(r"`[^`]*`")
 
+# GH#35121: companion installed alongside this hook; an older install without
+# it simply skips the Capture Check (fail-open).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import session_capture_check as capture
+except ImportError:  # pragma: no cover - partial install
+    capture = None
+
 
 def _is_headless() -> bool:
     """Return True for worker/headless/SDK sessions."""
@@ -103,13 +118,17 @@ def _scan_assistant(content, state: dict) -> None:
     if text.strip():
         state["assistant"] = text
     for block in content if isinstance(content, list) else []:
-        if not isinstance(block, dict) or block.get("type") != "tool_use":
-            continue
-        tool_input = block.get("input")
-        if block.get("name") == "TodoWrite" and isinstance(tool_input, dict):
-            todos = tool_input.get("todos")
-            if isinstance(todos, list):
-                state["todos"] = todos
+        if isinstance(block, dict) and block.get("type") == "tool_use":
+            _scan_tool_use(block.get("name"), block.get("input"), state)
+
+
+def _scan_tool_use(name, tool_input, state: dict) -> None:
+    if name == "TodoWrite" and isinstance(tool_input, dict):
+        todos = tool_input.get("todos")
+        if isinstance(todos, list):
+            state["todos"] = todos
+    if capture is not None:
+        capture.record_edit(name, tool_input, state["edits"])
 
 
 def _scan_entry(entry, state: dict) -> None:
@@ -130,7 +149,7 @@ def _scan_entry(entry, state: dict) -> None:
 
 def _read_transcript(path: str) -> dict:
     """Parse the JSONL transcript; raise on unreadable input (caller fails open)."""
-    state = {"todos": None, "user": "", "assistant": ""}
+    state = {"todos": None, "user": "", "assistant": "", "edits": set()}
     transcript = Path(path).expanduser()
     size = transcript.stat().st_size
     with transcript.open("rb") as handle:
@@ -185,6 +204,19 @@ def _hands_back_to_user(text: str, open_count: int) -> bool:
     return open_count <= 1 and _reports_blocker(text)
 
 
+def _stop_reason(state: dict, final_text: str, cwd: str):
+    """Block reason for open todos, or (GH#35121) for an unasked closeout that
+    leaves session-edited files uncommitted once every todo is terminal."""
+    open_todos = _open_todos(state["todos"])
+    if _hands_back_to_user(final_text, len(open_todos)):
+        return None
+    if open_todos:
+        return _block_reason(open_todos, final_text)
+    if capture is None:
+        return None
+    return capture.capture_block(state["edits"], _without_code(final_text), cwd)
+
+
 def _state_file(session_id: str) -> Path:
     base = os.environ.get("AIDEVOPS_STOP_HOOK_STATE_DIR") or os.path.join(
         os.path.expanduser("~"), ".aidevops", ".agent-workspace", "tmp", "stop-hook"
@@ -228,18 +260,15 @@ def decide(payload: dict):
     if blocks >= _max_blocks():
         return None
     state = _read_transcript(transcript_path)
-    open_todos = _open_todos(state["todos"])
     final_text = payload.get("last_assistant_message")
     if not isinstance(final_text, str) or not final_text.strip():
         final_text = state["assistant"]
-    if (
-        USER_STOP_RE.search(state["user"])
-        or not open_todos
-        or _hands_back_to_user(final_text, len(open_todos))
-    ):
-        return None
-    _record_block(session_id, blocks + 1)
-    return _block_reason(open_todos, final_text)
+    reason = None
+    if not USER_STOP_RE.search(state["user"]):
+        reason = _stop_reason(state, final_text, str(payload.get("cwd") or ""))
+    if reason:
+        _record_block(session_id, blocks + 1)
+    return reason
 
 
 def _block_reason(open_todos: list, final_text: str) -> str:

@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
+import { addEditedPaths, captureCheck, defaultDirtyEdits } from "./session-continuation-capture.mjs";
 import {
   activeTodos,
   boundedText,
@@ -117,6 +118,14 @@ function beforeTool(state, input, output) {
   capMap(state.calls, state.maxScopes * 4);
 }
 
+// GH#35121: remember which files this session's edit tools changed.
+function recordEdits(state, call) {
+  const edits = addEditedPaths(state.edits.get(call.scope), call.tool, call.args, state.repository);
+  if (!edits) return;
+  state.edits.set(call.scope, edits);
+  capMap(state.edits, state.maxScopes);
+}
+
 function afterTool(state, input, output) {
   const callID = String(input?.callID || "");
   const call = state.calls.get(callID) || {
@@ -126,6 +135,8 @@ function afterTool(state, input, output) {
   };
   state.calls.delete(callID);
   const failed = toolOutcomeFailed(output);
+
+  if (!failed) recordEdits(state, call);
 
   if (!failed && call.tool.toLowerCase() === "todowrite") {
     const active = activeTodos(call.args?.todos);
@@ -206,7 +217,29 @@ function correctBlockerYield(state, input) {
   return { corrected: true, remaining, blocker: true };
 }
 
+// GH#35121: a closeout that asks the user for nothing must not leave files
+// this session edited uncommitted. Steer once per distinct dirty set toward
+// the Capture Check: commit with authority, otherwise ask for bounded
+// commit/PR approval and keep Close at Not yet. Never commits anything itself.
+function correctUncapturedCloseout(state, input, output) {
+  const scope = scopeFor(state, input);
+  const check = captureCheck(state.edits.get(scope), output?.text, state.dirtyEdits, state.captureSteered.get(scope));
+  if (check.error) state.qualityLog?.("WARN", `[session-continuation] capture check failed: ${boundedText(check.error?.message)}`);
+  if (!check.steering) return { corrected: false };
+  state.captureSteered.set(scope, check.fingerprint);
+  capMap(state.captureSteered, state.maxScopes);
+  queueSteering(state, input, "capture", check.steering);
+  state.qualityLog?.("WARN", `[session-continuation] queued uncommitted-edit capture steering for session ${sessionHashFor(input)}`);
+  return { corrected: true, capture: true, dirty: check.dirty };
+}
+
 function completeText(state, input, output) {
+  const result = correctTodoYield(state, input, output);
+  if (result.corrected) return result;
+  return correctUncapturedCloseout(state, input, output);
+}
+
+function correctTodoYield(state, input, output) {
   if (!isExplicitCompletionClaim(output?.text)) {
     if (isPathBlockerYield(output?.text)) return correctBlockerYield(state, input);
     return { corrected: false };
@@ -275,6 +308,9 @@ export function createSessionContinuationGuard(options = {}) {
     recoveries: new Map(),
     loadedScopes: new Set(),
     steering: new Map(),
+    edits: new Map(),
+    captureSteered: new Map(),
+    dirtyEdits: options.dirtyEdits || defaultDirtyEdits,
   };
 
   return {
