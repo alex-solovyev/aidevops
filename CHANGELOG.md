@@ -10,6 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.47] - 2026-10-19
+
+### Added
+
+- read-wide write-narrow filesystem boundary for headless workers (#35141)
+- redirect temp-dir external write permission requests to AIDEVOPS_TEMP_DIR (GH#35128) (#35138)
+- repoint dependants of superseded issues to successor (GH#35130) (#35140)
+
+### Changed
+
+- Maintenance: trust pip:aiohttp and bump to 3.14.4 (#35135)
+
+### Fixed
+
+- preserve recreated staged deletions during dirty cleanup
+- patch aiohttp vulnerability (GH#35131)
+
 ## [3.39.46] - 2026-10-19
 
 ### Added
