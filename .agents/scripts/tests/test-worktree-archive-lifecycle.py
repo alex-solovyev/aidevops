@@ -28,6 +28,7 @@ sys.path.insert(0, str(HELPER.parent))
 import worktree_lifetime_archive as lifecycle
 import worktree_lifecycle_status as lifecycle_status
 import worktree_recovery_legacy_report as legacy_report
+from worktree_recovery_producer_cases import ProducerCases
 
 
 class LegacyRecoveryReport(unittest.TestCase):
@@ -137,7 +138,7 @@ class LegacyRecoveryReport(unittest.TestCase):
             self.assertFalse((root / "missing.db").exists())
 
 
-class ArchiveLifecycle(unittest.TestCase):
+class ArchiveLifecycle(ProducerCases, unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="archive-lifecycle-")
         self.addCleanup(self.temp.cleanup)
