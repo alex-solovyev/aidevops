@@ -38,6 +38,7 @@ import {
   CONVERSATION_ORIGIN,
   CONVERSATION_OVERLAY_ENV,
   isRemoteInteractiveConversation,
+  isRestrictedConversation,
   loadTeamInterfaceConversation,
 } from "./team-interface-context.mjs";
 import { enforceConversationPathAccess } from "./team-interface-path-guard.mjs";
@@ -50,8 +51,13 @@ import { createTtsrHooks, isPluginGreetingEnabled } from "./ttsr.mjs";
 import { createRootSessionGreetingGate } from "./root-session-greeting-gate.mjs";
 import { isHeadless } from "./proxy-lifecycle.mjs";
 import { createV2McpRuntime } from "./v2-mcp-adapter.mjs";
-import { loadV2PrimaryProfiles, registerV2PrimaryProfiles } from "./v2-agent-profiles.mjs";
+import {
+  loadV2PrimaryProfiles,
+  registerV2ManagedDirectoryPermissions,
+  registerV2PrimaryProfiles,
+} from "./v2-agent-profiles.mjs";
 import { applyV2ContextBudget, readV2ContextBudget } from "./v2-context-budget.mjs";
+import { applyV2PermissionEvaluation } from "./v2-permission-evaluation.mjs";
 import { registerV2SubagentProfiles } from "./v2-subagent-profiles.mjs";
 import { registerV2OnDemandMcpAgents } from "./v2-on-demand-mcp-agents.mjs";
 import { createV2ProviderAuthRuntime } from "./v2-provider-auth.mjs";
@@ -60,6 +66,8 @@ import {
   applyLegacyToolOutput,
   legacyToolOutput,
 } from "./v2-tool-adapter.mjs";
+
+export { applyV2PermissionEvaluation };
 
 const HOME = homedir();
 const PLUGIN_ENTRY_PATH = fileURLToPath(import.meta.url);
@@ -289,17 +297,6 @@ export function defineAidevopsV2Adapter(setup) {
   return { id: "aidevops", setup };
 }
 
-export function applyV2PermissionEvaluation(permissionBroker, event) {
-  const output = { status: "ask" };
-  permissionBroker.permissionAsk({
-    ...event,
-    type: event.action,
-    patterns: event.resources,
-  }, output);
-  if (output.status === "allow") event.effect = "allow";
-  if (output.status === "deny") event.effect = "deny";
-}
-
 async function disposeAidevopsV2({ stopEvents, boundedOperationManager, mcpRuntime, registrations }) {
   await stopEvents?.().catch(() => {});
   try {
@@ -422,6 +419,9 @@ export async function setupAidevopsV2(ctx) {
     await register(registrations, ctx.agent.transform((editor) => {
       registerV2PrimaryProfiles(editor, primaryProfiles);
       registerV2SubagentProfiles(editor, { agentsDir: AGENTS_DIR, routing: modelRouting });
+      // V1 managed-directory parity, including its read-only conversation exclusion;
+      // before MCP agents so they inherit it from `general` (GH#35170).
+      if (!isRestrictedConversation(conversation)) registerV2ManagedDirectoryPermissions(editor);
       // After primaries so every registered agent receives the MCP denies (GH#34219).
       registerV2OnDemandMcpAgents(editor, { agentsDir: AGENTS_DIR, toolPolicy: mcpToolPolicy });
     }));
