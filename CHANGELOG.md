@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.49] - 2026-10-20
+
+### Fixed
+
+- fix OpenCode v2 headless log level and canary agent
+- fix portable permission assertions in recovery tests
+
 ## [3.39.48] - 2026-10-20
 
 ### Changed
