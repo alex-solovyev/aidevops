@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.48] - 2026-10-20
+
+### Changed
+
+- Documentation: tighten worktree recovery contracts (GH#35155) (#35156)
+
+### Fixed
+
+- fix OpenCode 2 gpt_image_generate OAuth account wiring
+
 ## [3.39.47] - 2026-10-19
 
 ### Added
