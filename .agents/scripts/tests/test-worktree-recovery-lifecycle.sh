@@ -34,6 +34,8 @@ setup() {
 	# Git reports canonical worktree paths and the managed-lifetime fence
 	# refuses any other form, so resolve macOS /var -> /private/var.
 	TEST_DIR=$(cd "$TEST_DIR" && pwd -P) || return 1
+	# Restored fixture worktrees belong to this test-owned base, not the host base.
+	export AIDEVOPS_WORKTREE_BASE_DIR="$TEST_DIR"
 	# Use a fixture-owned ownership registry: the managed-lifetime fence fails
 	# closed without one, and the host registry must never be read or written.
 	export WORKTREE_REGISTRY_DIR="${TEST_DIR}/registry"
@@ -276,6 +278,8 @@ run_all_tests() {
 	test_cache_retrofit_resumes_interrupted_move
 	test_cache_retrofit_resumes_interrupted_delete
 	test_cache_retrofit_rejects_unmeasured_legacy_delete_replay
+	test_cache_retrofit_unmerged_retention_and_liveness
+	test_cache_retrofit_rejects_old_schema_and_age_drift
 	test_automatic_maintenance_is_bounded_and_policy_bound
 	test_automatic_maintenance_checks_capacity_before_aggregate_size
 	test_automatic_maintenance_enters_pressure_when_aggregate_size_times_out
@@ -309,6 +313,8 @@ run_cache_retrofit_tests() {
 	test_cache_retrofit_resumes_interrupted_move
 	test_cache_retrofit_resumes_interrupted_delete
 	test_cache_retrofit_rejects_unmeasured_legacy_delete_replay
+	test_cache_retrofit_unmerged_retention_and_liveness
+	test_cache_retrofit_rejects_old_schema_and_age_drift
 	printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]
 	return $?
