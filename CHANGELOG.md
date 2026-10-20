@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.53] - 2026-10-21
+
+### Added
+
+- aidevops cleanup storage command and r922 storage hygiene routine
+
+### Fixed
+
+- secret get reports gopass/gpg read failures instead of 'Secret not found'
+- make release lane finalize idempotent on already-terminal lane (GH#35263) (#35266)
+- update certifi to 2026.10.19 (GH#35262) (#35264)
+- repair regression report list and table formatting (#35261)
+- use portable live launchd fixtures (GH#35253) (#35260)
+- prune unmerged recovery cache roots after retention (#35258)
+
 ## [3.39.52] - 2026-10-20
 
 ### Added
