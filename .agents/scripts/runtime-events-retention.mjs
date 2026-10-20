@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isDirectEntrypoint } from "./entrypoint-guard.mjs";
 import {
   initialiseRuntimeEventStore,
   resolveRuntimeEventsDbPath,
@@ -34,6 +34,7 @@ export const RUNTIME_EVENT_ACTIVE_DAYS_DEFAULT = 30;
 export const RUNTIME_EVENT_ARCHIVE_MAX_ROWS_DEFAULT = 5000;
 export const RUNTIME_EVENT_MAINTENANCE_MAX_PARTITIONS_DEFAULT = 20;
 export const RUNTIME_EVENT_MAINTENANCE_MAX_DURATION_SECONDS_DEFAULT = 120;
+const SQLITE_OUTPUT_MAX_BYTES = 256 * 1024 * 1024;
 
 const ERROR_STATUS = new Set([
   "blocked", "cancelled", "denied", "error", "failed", "rejected", "timed_out", "timeout",
@@ -95,7 +96,7 @@ function normalizedMaxRows(value) {
   return parsed;
 }
 
-function sqlite(dbPath, sql, { json = false, readonly = false } = {}) {
+function sqlite(dbPath, sql, { json = false, readonly = false, timeoutMs = 30000 } = {}) {
   const args = ["-cmd", ".timeout 15000"];
   if (json) args.push("-json");
   if (readonly) args.push("-readonly");
@@ -103,8 +104,11 @@ function sqlite(dbPath, sql, { json = false, readonly = false } = {}) {
   return execFileSync("sqlite3", args, {
     encoding: "utf8",
     input: sql,
+    // A full archive batch returns up to max-rows events with 16 KiB payloads
+    // as escaped JSON, far beyond Node's 1 MiB default (ENOBUFS).
+    maxBuffer: SQLITE_OUTPUT_MAX_BYTES,
     stdio: ["pipe", "pipe", "pipe"],
-    timeout: 30000,
+    timeout: timeoutMs,
   }).trim();
 }
 
@@ -411,6 +415,6 @@ export function runRetentionCli(argv = process.argv.slice(2)) {
   });
 }
 
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+if (isDirectEntrypoint(import.meta.url)) {
   process.exitCode = runRetentionCli();
 }
