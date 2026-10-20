@@ -25,7 +25,7 @@ import time
 
 def positive_seconds(value):
     seconds = float(value)
-    if not math.isfinite(seconds) or seconds <= 0:
+    if not 0 < seconds < math.inf:
         raise argparse.ArgumentTypeError("seconds must be finite and positive")
     return seconds
 
@@ -167,6 +167,36 @@ def check_render(text, expected, status):
         raise ValueError(f"renderer exited with status {exit_code}")
 
 
+CAPTURE_PREFIX = "tui-capture-"
+OWNER_FILE = "owner.pid"
+OWNERLESS_GRACE_SECONDS = 3600
+
+
+def owner_alive(path):
+    try:
+        pid = int((path / OWNER_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # Legacy or just-created dir with no owner file yet: age-gated.
+        return time.time() - path.stat().st_mtime < OWNERLESS_GRACE_SECONDS
+    # EPERM means another user's process; rmtree then fails harmlessly.
+    with suppress(ProcessLookupError, PermissionError):
+        os.kill(pid, 0)
+        return True
+    return False
+
+
+def reap_stale_captures(temp_root):
+    """Remove capture snapshots left by killed runs (SIGKILL skips cleanup)."""
+    for path in temp_root.glob(CAPTURE_PREFIX + "*"):
+        if path.is_dir() and not path.is_symlink() and not owner_alive(path):
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def exit_on_signal(signum, _frame):
+    # SystemExit unwinds through TemporaryDirectory, removing the snapshot.
+    raise SystemExit(128 + signum)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--session", required=True)
@@ -184,10 +214,9 @@ def main():
     args = parser.parse_args()
     try:
         args.cwd = str(Path(args.cwd).resolve(strict=True))
-        if not args.tui_config:
-            inherited_tui = os.environ.get("OPENCODE_TUI_CONFIG")
-            if inherited_tui:
-                args.tui_config = str(Path(args.cwd) / inherited_tui)
+        inherited_tui = os.environ.get("OPENCODE_TUI_CONFIG")
+        if not args.tui_config and inherited_tui:
+            args.tui_config = str(Path(args.cwd) / inherited_tui)
         if args.isolated_config and not args.tui_config:
             parser.error("--isolated-config requires --tui-config or OPENCODE_TUI_CONFIG")
         source = Path(args.data_dir).resolve() / "opencode" / "opencode.db"
@@ -196,8 +225,12 @@ def main():
             raise ValueError("session database not found; specify the launcher --cwd or --data-dir")
         temp_root = Path(os.environ.get("AIDEVOPS_TEMP_DIR", str(Path.home() / ".aidevops/.agent-workspace/tmp")))
         temp_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="tui-capture-", dir=temp_root) as temporary:
+        reap_stale_captures(temp_root)
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, exit_on_signal)
+        with tempfile.TemporaryDirectory(prefix=CAPTURE_PREFIX, dir=temp_root) as temporary:
             data_dir = Path(temporary)
+            (data_dir / OWNER_FILE).write_text(str(os.getpid()), encoding="utf-8")
             database = data_dir / "opencode" / "opencode.db"
             database.parent.mkdir()
             # SQLite backup includes committed WAL data; never open the source
