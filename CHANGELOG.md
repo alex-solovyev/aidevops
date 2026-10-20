@@ -10,6 +10,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.52] - 2026-10-20
+
+### Added
+
+- inventory large storage stores and deduplicate soft-limit advisories (#35246)
+- prune superseded repo-layout migration DB backups (#35229)
+
+### Changed
+
+- Maintenance: promote OpenCode v1 pin to 1.19.3
+- Maintenance: recover reviewed actions updates for GH#35216 (#35234)
+- Maintenance: bump @fontsource/source-serif-4 from 5.3.0 to 5.3.1
+- Maintenance: bump @types/bun from 1.4.2 to 1.4.3 (#35220)
+
+### Fixed
+
+- keep sustained-pressure escalation across small removals and report preparation failure detail
+- read squash metadata through authorized PR transport (#35240)
+- ignore shared wildcard footprint patterns in overlap check (GH#35237) (#35238)
+- reap stale tui-capture snapshots and clean up on signals (GH#35223) (#35236)
+- preserve descriptive runtime evidence (#35235)
+- recover Source Sans 3 update and trust policy (#35232)
+
 ## [3.39.51] - 2026-10-20
 
 ### Changed
