@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.50] - 2026-10-20
+
+### Changed
+
+- Maintenance: promote OpenCode V2 pin to 2.1.0
+
+### Fixed
+
+- skip missing single-owner routine adapters (GH#35197) (#35199)
+- preserve inner GitHub read replay failures (#35195)
+- replay verbatim user input and images after compaction
+- guard images in OpenCode 1.x messages.transform shape (GH#35188) (#35191)
+- retain merge head read failure evidence (#35192)
+- reject bounded single-issue worker dispatch (GH#35184) (#35190)
+- preserve merge read output replay failures (#35183)
+- include package tests in finding scope (GH#35175) (#35177)
+- fix empty checkpoint attempt TSV parsing
+- make verified review handoff idempotent (GH#35169) (#35171)
+
 ## [3.39.49] - 2026-10-20
 
 ### Fixed
