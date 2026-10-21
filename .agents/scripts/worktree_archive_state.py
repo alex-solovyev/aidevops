@@ -6,10 +6,15 @@
 import os
 from pathlib import Path
 
-from worktree_archive_administration import (
-    administration, git,
-)
+from worktree_archive_administration import administration, git
 from worktree_archive_auto_merge import auto_merge as auto_merge
+from worktree_archive_merge_capture import (
+    capture_merge as capture_merge, load_merge as load_merge,
+    merge_digest as merge_digest, merge_pending as merge_pending,
+    merge_state as merge_state, validate_merge as validate_merge,
+)
+from worktree_archive_merge_objects import verify_merge_objects as verify_merge_objects
+from worktree_archive_merge_restore import restore_merge as restore_merge
 
 
 def inventories(root, include_ignored=False):

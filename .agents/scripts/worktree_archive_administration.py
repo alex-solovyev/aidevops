@@ -13,7 +13,7 @@ from worktree_archive_readiness import (
 )
 from worktree_archive_git import (
     auto_merge_oid as auto_merge_oid, git as git,
-    validate_auto_merge as validate_auto_merge,
+    validate_auto_merge as validate_auto_merge, fetch_head_roots as fetch_head_roots,
 )
 
 
@@ -23,29 +23,14 @@ OPERATIONS = {"MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD",
               "rebase-merge", "rebase-apply", "sequencer", "BISECT_LOG"}
 
 
-def fetch_head_roots(encoded):
-    """Preserve all fetched objects, including not-for-merge entries, as bundle tips."""
-    roots = []
-    for line in bytes.fromhex(encoded).splitlines():
-        fields = line.split(b"\t", 2)
-        if len(fields) != 3 or fields[1] not in (b"", b"not-for-merge"):
-            raise ValueError("git_admin:invalid_FETCH_HEAD")
-        oid = fields[0]
-        if (len(oid) not in (40, 64) or not oid.strip(b"0")
-                or any(byte not in b"0123456789abcdef" for byte in oid)):
-            raise ValueError("git_admin:invalid_FETCH_HEAD_oid")
-        roots.append(oid.decode("ascii"))
-    return roots
-
-
 def admin_path_allowed(name):
     return name in ADMIN_FILES or any(name.startswith(prefix) for prefix in PRIVATE_PREFIXES)
 
 
-def validate_admin_entry(entry, name):
+def validate_admin_entry(entry, name, allow_merge=False):
     if name == "index.lock":
         raise ValueError("git_admin:index_locked:index.lock")
-    if name in OPERATIONS or name == "aidevops/js-install-partial":
+    if (name in OPERATIONS and not (allow_merge and name == 'MERGE_HEAD')) or name == "aidevops/js-install-partial":
         raise ValueError(f"git_admin:unfinished_operation:{name}")
     if entry.is_symlink():
         raise ValueError(f"git_admin:symlink:{name}")
@@ -56,16 +41,16 @@ def admin_directory_allowed(name):
             or any(name.startswith(prefix) for prefix in PRIVATE_PREFIXES))
 
 
-def administration_files(admin, directory, linked):
+def administration_files(admin, directory, linked, allow_merge=False):
     files = {}
     for entry in sorted(directory.iterdir()):
         name = entry.relative_to(admin).as_posix()
-        validate_admin_entry(entry, name)
+        validate_admin_entry(entry, name, allow_merge)
         if name in {"commondir", "gitdir"} and linked and entry.is_file():
             continue
         if entry.is_dir() and admin_directory_allowed(name):
-            files.update(administration_files(admin, entry, linked))
-        elif entry.is_file() and admin_path_allowed(name):
+            files.update(administration_files(admin, entry, linked, allow_merge))
+        elif entry.is_file() and (admin_path_allowed(name) or (allow_merge and name in {'MERGE_HEAD', 'MERGE_MODE'})):
             files[name] = read_admin_bytes(entry, name).hex()
         elif not linked and name == "branches" and entry.is_dir() and not any(entry.iterdir()):
             # Stock Git templates may include this empty legacy directory.
@@ -89,11 +74,11 @@ def validate_admin_config(root, admin):
                 raise ValueError('git_admin:location_dependent_config:' + key.decode('ascii'))
 
 
-def administration(root):
+def administration(root, allow_merge=False):
     """Read only explicitly supported per-worktree administration, never common config."""
     admin = Path(os.fsdecode(git(root, "rev-parse", "--absolute-git-dir").rstrip(b"\n")))
     common = Path(os.fsdecode(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").rstrip(b"\n")))
-    files = administration_files(admin, admin, admin.resolve() != common.resolve())
+    files = administration_files(admin, admin, admin.resolve() != common.resolve(), allow_merge)
     fetch_head_roots(files.get("FETCH_HEAD", ""))
     if "AUTO_MERGE" in files:
         validate_auto_merge(root, auto_merge_oid(bytes.fromhex(files["AUTO_MERGE"])))

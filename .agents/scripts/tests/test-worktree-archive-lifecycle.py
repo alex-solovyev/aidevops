@@ -30,6 +30,7 @@ import worktree_lifecycle_status as lifecycle_status
 import worktree_recovery_legacy_report as legacy_report
 from worktree_archive_administration import administration_files
 from worktree_recovery_producer_cases import ProducerCases
+from worktree_archive_merge_cases import MergeCases
 
 
 class ArchiveAdministration(unittest.TestCase):
@@ -167,7 +168,7 @@ class LegacyRecoveryReport(unittest.TestCase):
             self.assertFalse((root / "missing.db").exists())
 
 
-class ArchiveLifecycle(ProducerCases, unittest.TestCase):
+class ArchiveLifecycle(MergeCases, ProducerCases, unittest.TestCase):
     def setUp(self):
         self.addCleanup(os.umask, os.umask(0o022))
         self.temp = tempfile.TemporaryDirectory(prefix="archive-lifecycle-")
@@ -224,6 +225,50 @@ class ArchiveLifecycle(ProducerCases, unittest.TestCase):
     def auto_merge_path(self):
         return Path(os.fsdecode(self.git(self.work, "rev-parse", "--absolute-git-dir")).strip()) / "AUTO_MERGE"
 
+    def start_conflicted_merge(self):
+        self.git(self.repo, 'checkout', '-qb', 'other')
+        (self.repo / 'mixed.txt').write_bytes(b'theirs\n')
+        self.git(self.repo, 'commit', '-qam', 'theirs')
+        (self.work / 'mixed.txt').write_bytes(b'ours\n')
+        self.git(self.work, 'commit', '-qam', 'ours')
+        self.assertNotEqual(self.run_command('git', '-C', self.work, 'merge', 'other', check=False).returncode, 0)
+
+    def test_managed_merge_requires_restore_and_rejects_drift(self):
+        self.start_conflicted_merge()
+        managed = self.managed_fixture()
+        archive = self.prepare_managed(managed)
+        record = self.managed_record(managed)
+        self.assertEqual(record['archive_operation']['phase'], 'verified')
+        self.assertEqual(record['archive_operation']['snapshot']['schema'], 4)
+        with patch.dict(os.environ, self.env, clear=True):
+            lifecycle.require_verified(record)
+        self.assertTrue(archive.is_dir())
+        (self.auto_merge_path().parent / 'MERGE_MSG').write_bytes(b'late message edit\n')
+        with patch.dict(os.environ, self.env, clear=True), self.assertRaisesRegex(ValueError, 'source changed'):
+            lifecycle.require_verified(record)
+        self.assertTrue(self.work.is_dir())
+
+    def test_merge_required_orig_head_and_missing_parent(self):
+        (self.work / 'mixed.txt').write_bytes(b'operation-only commit\n')
+        self.git(self.work, 'commit', '-qam', 'previous operation')
+        previous = self.git(self.work, 'rev-parse', 'HEAD')
+        self.git(self.work, 'reset', '--hard', 'HEAD~1')
+        self.start_conflicted_merge()
+        (self.auto_merge_path().parent / 'ORIG_HEAD').write_bytes(previous)
+        archive = self.archive()
+        target = self.root / 'operation-only-restore'
+        self.helper('restore', archive, '--target', target)
+        self.git(target, 'gc', '--prune=now')
+        self.assertEqual(self.git(target, 'rev-parse', 'ORIG_HEAD'), previous)
+        self.git(target, 'cat-file', '-e', previous.strip().decode() + '^{commit}')
+        parent = self.git(self.work, 'rev-parse', 'MERGE_HEAD').decode().strip()
+        (self.repo / '.git/objects' / parent[:2] / parent[2:]).unlink()
+        result = self.helper('archive', self.work, '--repo', 'fixture/repo', '--issue', '99',
+                             '--reason', 'failed-worker', '--base-branch', 'develop',
+                             '--output-root', self.archives, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(self.work.is_dir())
+
     def test_auto_merge_conflict_round_trip_without_source_objects(self):
         self.git(self.repo, "checkout", "-qb", "other")
         (self.repo / "mixed.txt").write_bytes(b"other side\n")
@@ -233,11 +278,11 @@ class ArchiveLifecycle(ProducerCases, unittest.TestCase):
         result = self.run_command("git", "-C", self.work, "merge", "other", check=False)
         self.assertNotEqual(result.returncode, 0)
         oid = self.auto_merge_path().read_bytes()
-        # Active conflict is still refused, with no source removal.
+        # A supported active merge now uses a structured, self-contained archive.
         failed = self.helper("archive", self.work, "--repo", "fixture/repo", "--issue", "99",
                              "--reason", "failed-worker", "--base-branch", "develop",
                              "--output-root", self.archives, check=False)
-        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(failed.returncode, 0, failed.stderr)
         self.assertTrue(self.work.exists())
         # Resolve and commit normally, then retain the genuine merge tree as a
         # standalone diagnostic reference (not a promise of merge continuation).

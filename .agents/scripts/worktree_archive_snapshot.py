@@ -27,6 +27,7 @@ from worktree_archive_administration import (
     OPERATIONS as OPERATIONS,
 )
 from worktree_archive_state import auto_merge, inventories, supported_state
+from worktree_archive_state import capture_merge, merge_digest, restore_merge
 from worktree_archive_index import (
     archive_policies as archive_policies, git_index_state as git_index_state,
 )
@@ -81,7 +82,8 @@ def prepare_incremental_restore(archive, target):
     target.mkdir(mode=0o755)
     object_format = 'sha256' if len(manifest['head_sha']) == 64 else 'sha1'
     git(target, 'init', '--quiet', f'--object-format={object_format}')
-    seed_base(target, manifest)
+    if manifest.get('self_contained') is not True:
+        seed_base(target, manifest)
     if (manifest.get('capture_policy') == 'git-only'
             and manifest.get('source_fingerprint', {}).get('auto_merge') is None):
         if (archive / 'commits.bundle').is_file():
@@ -138,6 +140,17 @@ def git_snapshot(path, patches=None, metadata=None, include_untracked=True):
     """
     root = Path(path).resolve(strict=True)
     metadata = metadata if metadata is not None else git_index_state(root)
+    if 'merge' in metadata:
+        state = metadata['merge']
+        result = {'schema': 4, 'policy': 'git-only', 'head': state['head'],
+                  'files': len(state['working']), 'bytes': sum(len(value[1]) // 2 for value in state['working'].values() if value),
+                  'merge_sha256': merge_digest(state)}
+        if include_untracked:
+            paths = sorted(filter(None, git(root, 'ls-files', '--others', '--exclude-standard', '-z').split(b'\0')))
+            contents = [[os.fsdecode(raw), fingerprint(root, raw)] for raw in paths]
+            result.update(untracked_files=len(paths),
+                          untracked_sha256=hashlib.sha256(json.dumps(contents, ensure_ascii=True).encode('ascii')).hexdigest())
+        return result
     options = ("--binary", "--full-index", "--no-ext-diff", "--no-textconv",
                "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "--submodule=short")
     staged = (patches / "staged.patch").read_bytes() if patches else git(root, "diff", "--cached", *options)
@@ -187,25 +200,26 @@ def snapshot(path, preserve_git_admin=False, include_ignored=False, git_only=Fal
 
 def main(argv):
     command = argv[0] if argv else ''
-    if command == 'auto-merge-capture' and len(argv) == 4:
-        capture_auto_merge(Path(argv[1]), Path(argv[2]).resolve(), argv[3])
-    elif command == 'auto-merge-restore' and len(argv) == 3:
-        restore_auto_merge(Path(argv[1]), Path(argv[2]).resolve())
-    elif command == "admin-capture" and len(argv) in (4, 5):
-        capture_administration(Path(argv[1]), Path(argv[2]).resolve(), argv[3] == "1", *argv[4:])
-    elif command == 'admin-prepare-restore' and len(argv) == 3:
-        prepare_incremental_restore(Path(argv[1]).resolve(), Path(argv[2]).resolve())
-    elif command == "admin-restore" and len(argv) == 3:
-        restore_administration(Path(argv[1]), Path(argv[2]).resolve())
-    elif command == "admin-verify" and len(argv) == 2:
-        load_administration(Path(argv[1]))
-    else:
-        parser = argparse.ArgumentParser(description=__doc__)
-        parser.add_argument("--preserve-git-admin", action="store_true")
-        parser.add_argument("--include-ignored", action="store_true")
-        parser.add_argument("worktree")
-        args = parser.parse_args(argv)
-        print(json.dumps(snapshot(args.worktree, args.preserve_git_admin, args.include_ignored), sort_keys=True))
+    handlers = {
+        'auto-merge-capture': ((4,), lambda: capture_auto_merge(Path(argv[1]), Path(argv[2]).resolve(), argv[3])),
+        'merge-capture': ((3,), lambda: capture_merge(Path(argv[1]), Path(argv[2]).resolve())),
+        'merge-restore': ((3,), lambda: restore_merge(Path(argv[1]), Path(argv[2]).resolve())),
+        'auto-merge-restore': ((3,), lambda: restore_auto_merge(Path(argv[1]), Path(argv[2]).resolve())),
+        'admin-capture': ((4, 5), lambda: capture_administration(Path(argv[1]), Path(argv[2]).resolve(), argv[3] == '1', *argv[4:])),
+        'admin-prepare-restore': ((3,), lambda: prepare_incremental_restore(Path(argv[1]).resolve(), Path(argv[2]).resolve())),
+        'admin-restore': ((3,), lambda: restore_administration(Path(argv[1]), Path(argv[2]).resolve())),
+        'admin-verify': ((2,), lambda: load_administration(Path(argv[1]))),
+    }
+    lengths, handler = handlers.get(command, ((), None))
+    if len(argv) in lengths:
+        handler()
+        return 0
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--preserve-git-admin", action="store_true")
+    parser.add_argument("--include-ignored", action="store_true")
+    parser.add_argument("worktree")
+    args = parser.parse_args(argv)
+    print(json.dumps(snapshot(args.worktree, args.preserve_git_admin, args.include_ignored), sort_keys=True))
     return 0
 
 

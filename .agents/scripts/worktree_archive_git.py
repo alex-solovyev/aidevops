@@ -6,6 +6,7 @@
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -15,7 +16,11 @@ def git(root, *args, data=None):
     for name in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
                  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
         environment.pop(name, None)
-    return subprocess.run(["git", "-C", str(root), *args], input=data, env=environment,
+    executable = shutil.which('git')
+    if executable is None:
+        raise ValueError('Git executable unavailable')
+    return subprocess.run(  # nosec B603 -- resolved Git, fixed subcommands, argv-only paths and object IDs
+                          [str(Path(executable).absolute()), "-c", "core.hooksPath=/dev/null", "-C", str(root), *args], input=data, env=environment,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           check=True, timeout=60).stdout
 
@@ -58,3 +63,18 @@ def fetch_preservation(root, archive):
     if bundle.is_file():
         git(root, 'fetch', '--quiet', '--no-write-fetch-head', str(bundle),
             '+refs/archive/*:refs/archive/*')
+
+
+def fetch_head_roots(encoded):
+    """Preserve all fetched objects, including not-for-merge entries, as bundle tips."""
+    roots = []
+    for line in bytes.fromhex(encoded).splitlines():
+        fields = line.split(b"\t", 2)
+        if len(fields) != 3 or fields[1] not in (b"", b"not-for-merge"):
+            raise ValueError("git_admin:invalid_FETCH_HEAD")
+        oid = fields[0]
+        if (len(oid) not in (40, 64) or not oid.strip(b"0")
+                or any(byte not in b"0123456789abcdef" for byte in oid)):
+            raise ValueError("git_admin:invalid_FETCH_HEAD_oid")
+        roots.append(oid.decode("ascii"))
+    return roots
