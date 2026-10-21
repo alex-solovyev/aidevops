@@ -10,6 +10,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.54] - 2026-10-21
+
+### Added
+
+- add read-only TLS fleet probes (GH#35279) (#35286)
+- link advisory dismissal to allowlisted TLS checks (#35285)
+- opt-in OpenCode session retention prune (GH#35274) (#35276)
+- add eMudhra CA compromise advisory (GH#35271) (#35272)
+
+### Changed
+
+- Maintenance: sync GitHub issue refs to TODO.md (#35326)
+- Maintenance: sync GitHub issue refs to TODO.md (#35309)
+- Maintenance: add r-php-cve-watch 2-hourly PHP CVE patch watch routine
+- Maintenance: add t18748 tls-trust parent with phases t18749-t18751
+
+### Fixed
+
+- split DB URL fixtures that block release secretlint preflight
+- recover fully released checkpoint successors
+- report unsupported recovery metadata (GH#35317) (#35320)
+- adopt reviewed base image 6.0.1 (GH#35315) (#35319)
+- recover stale pull refs with pinned head fetch (#35312)
+- preserve planning task states and duplicate IDs (#35307)
+- unify archives and automate verified recovery compaction
+- bound and resume terminal blocker recovery intake (#35292)
+- unify creation and rootless lifetime evidence (GH#35288)
+- classify watchdog cap kills from current liveness (#35291)
+- scrub DB URL userinfo and JSON name/value secret pairs (GH#35273) (#35275)
+- align stale recovery lease trust with claim consensus (GH#35268) (#35270)
+
 ## [3.39.53] - 2026-10-21
 
 ### Added
