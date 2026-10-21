@@ -70,6 +70,17 @@ NAMED_CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# scheme://user:password@host (any scheme); group 1 runs through the ":" before the password.
+URL_USERINFO_PATTERN = re.compile(
+    r"\b([A-Za-z][A-Za-z0-9+.-]*://[^\s:@/\"'<>\\]+:)([^\s@/\"'<>\\]+)(?=@)"
+)
+
+# {"name":"X_PASSWORD","value":"secret"} where the secret name is a sibling field.
+NAME_VALUE_PAIR_PATTERN = re.compile(
+    r"(\\?\"(?:name|key|variable)\\?\"\s*:\s*\\?\"([^\"\\]*)\\?\"\s*,\s*\\?\"value\\?\"\s*:\s*\\?\")([^\"\\]+)(?=\\?\")",
+    re.IGNORECASE,
+)
+
 REDACTION_TOKEN = "[redacted-credential]"
 PEM_REDACTION_TOKEN = "[redacted-private-key]"
 PEM_BEGIN_MARKER = "-----BEGIN "
@@ -185,6 +196,20 @@ def scrub_private_keys(text: str) -> tuple[str, int]:
     return "".join(chunks), count
 
 
+def redact_group_values(pattern: re.Pattern, text: str, named: bool) -> tuple[str, int]:
+    """Redact the last capture group of each match; `named` also gates on a sensitive field name (group 2)."""
+    count = 0
+
+    def redact(match: re.Match) -> str:
+        nonlocal count
+        groups = match.groups()
+        skip = is_placeholder_value(groups[-1]) or (named and not is_sensitive_field_name(groups[1]))
+        count += int(not skip)
+        return match.group(0) if skip else f"{groups[0]}{REDACTION_TOKEN}"
+
+    return pattern.sub(redact, text), count
+
+
 def scrub_credentials(text: str) -> tuple[str, int]:
     """Replace credential tokens in text. Returns (scrubbed_text, match_count)."""
     named_count = 0
@@ -197,6 +222,9 @@ def scrub_credentials(text: str) -> tuple[str, int]:
         return redacted
 
     result, pem_count = scrub_private_keys(text)
+    result, pair_count = redact_group_values(NAME_VALUE_PAIR_PATTERN, result, True)
+    result, url_count = redact_group_values(URL_USERINFO_PATTERN, result, False)
+    named_count += pair_count + url_count
     result = NAMED_CREDENTIAL_ASSIGNMENT_PATTERN.sub(redact_and_count, result)
     result, token_count = CREDENTIAL_PATTERN.subn(REDACTION_TOKEN, result)
     return result, pem_count + named_count + token_count
