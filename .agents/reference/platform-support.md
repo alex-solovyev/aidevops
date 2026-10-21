@@ -20,6 +20,50 @@ here or imply that every derivative, architecture, or provider image was tested.
 | WSL2 (Ubuntu) | Full | systemd / cron | Recommended Windows path |
 | Windows (native) | Limited | — | Experimental `/optimise-windows-indexing-backups` only; use WSL2 for full support |
 
+## Worktree lifecycle backends
+
+Worktree creation and owner registration share `shared-worktree-create.sh`.
+macOS keeps the existing synchronous publication and legacy cleanup guards;
+it does not require systemd or a replacement launchd runner. New legacy creations
+record their backend and physical identity in `worktree_creation_backends`, not
+as managed descendant-completion receipts.
+
+Profile publication uses the managed runner only when Linux cgroup v2 and a
+reachable user-systemd version supporting `ExitType=cgroup` are available.
+`python3 scripts/worktree-managed-run.py --check-backend` probes that capability
+without starting a service. Other hosts select the legacy path **before** creating
+the worktree. A failure after managed execution starts is not retried as legacy.
+Existing managed records cannot be downgraded by a platform or backend change.
+
+These backends have different evidence: legacy cleanup retains its existing
+guards, while managed cleanup requires its cgroup completion receipts. Neither
+backend selection nor a dead owner PID is itself permission to delete a worktree.
+
+The shared creator covers host CLI, profile, Pulse, release/recovery, branch
+cleanup, planning, workflow-sync, plugin and archive-restore producers. Test
+fixtures and the isolated Frontier benchmark guest bootstrap are separate from
+the host worktree lifecycle. Callers retain their base-ref, path and ownership
+policies; an explicitly reserved empty directory may be admitted without
+dropping its reservation. Registration failure preserves the new tree.
+
+Recreating a removed managed worktree at the same path starts a fresh generation,
+not a reuse of its completion receipt. The ownership transaction preserves the
+closed prior record in `worktree_lifetime_history` before replacing it. Rotation
+requires valid completion evidence and a matching creation token durably recorded
+**before** Git runs. That fence invalidates the old receipt even if the filesystem
+reuses both inode numbers or the creator crashes before registration. Failed
+registration rolls back the history/active-record transition but preserves the
+pre-creation fence. Incomplete evidence, a different lifetime manager or a stale
+token fails closed. Existing trees cannot use this creation-only transition.
+
+Registration does not itself start a supervisor. Inside a managed run, generic
+producers bind to the invocation leader; outside one, unavailable Linux
+descendant-completion evidence remains unavailable. Temporary cleanup must
+preserve managed trees without closed proof, even after its synchronous Git
+commands finish. Branch-cleanup commands report deferred transport retirement
+separately from the result of their ref mutations. This is not a fallback to a
+full worktree copy or permission to downgrade the recorded backend.
+
 ## Command lookup (PATH only)
 
 Tools are resolved through PATH on every platform; there are no distro-specific

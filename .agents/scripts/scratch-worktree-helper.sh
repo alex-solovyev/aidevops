@@ -165,11 +165,15 @@ scratch_worktree_add() {
 	reason="${_SCRATCH_WT_REASON_PREFIX} label=${safe_label} pid=$$ started=${started} nonce=${RANDOM}${RANDOM}"
 	scratch_path="${base_dir}/.${repo_name}-${safe_label}-$$-${RANDOM}${RANDOM}"
 	[[ ! -e "$scratch_path" && ! -L "$scratch_path" ]] || return 1
-	if ! git -C "$repo_path" worktree add -q --detach --lock --reason "$reason" \
-		"$scratch_path" "$commitish" >/dev/null 2>&1; then
+	# shellcheck source=shared-worktree-create.sh
+	source "${BASH_SOURCE[0]%/*}/shared-worktree-create.sh" || return 1
+	local AIDEVOPS_WORKTREE_CREATE_OWNER_PID="$$"
+	local AIDEVOPS_WORKTREE_CREATE_SESSION="$reason"
+	if ! worktree_create_registered "$repo_path" "$scratch_path" "$commitish" \
+		-q --detach --lock --reason "$reason" >/dev/null 2>&1; then
 		# Git < 2.36 lacks `add --reason`: create, then lock before any use.
 		[[ ! -e "$scratch_path" ]] || return 1
-		git -C "$repo_path" worktree add -q --detach "$scratch_path" "$commitish" >/dev/null 2>&1 || return 1
+		worktree_create_registered "$repo_path" "$scratch_path" "$commitish" -q --detach >/dev/null 2>&1 || return 1
 		if ! git -C "$scratch_path" worktree lock --reason "$reason" "$scratch_path" >/dev/null 2>&1; then
 			git -C "$scratch_path" worktree remove "$scratch_path" >/dev/null 2>&1 || true
 			return 1
@@ -213,6 +217,8 @@ scratch_worktree_remove() {
 # Reclaim scratch worktrees left by interrupted owners (for example SIGKILL).
 # Only entries locked with this helper's token, whose owner is provably gone,
 # that have been idle for the stale window, and that remove cleanly qualify.
+# Managed entries additionally require their closed lifetime proof; a dead PID
+# never proves that its descendants have completed.
 # Arguments: $1 repo path
 # Returns: 0 always (best-effort; never blocks the caller)
 #######################################
@@ -223,6 +229,10 @@ scratch_worktree_reap_stale() {
 	local -a scratch_paths=()
 	local -a scratch_reasons=()
 	local index=0
+	if ! declare -F worktree_managed_require_removal_proof >/dev/null 2>&1; then
+		# shellcheck source=audit-worktree-removal-helper.sh
+		source "${_SCRATCH_WT_LIB_DIR}/audit-worktree-removal-helper.sh" >/dev/null 2>&1 || return 0
+	fi
 	[[ "$stale_minutes" =~ ^[0-9]+$ ]] || stale_minutes=30
 	while IFS= read -r line; do
 		case "$line" in
@@ -242,6 +252,11 @@ scratch_worktree_reap_stale() {
 		idle_match=$(find "$wt_path" -maxdepth 0 -mmin +"$stale_minutes" 2>/dev/null || true)
 		[[ -n "$idle_match" ]] || continue
 		[[ "$(_scratch_wt_current_reason "$wt_path" 2>/dev/null || true)" == "$reason" ]] || continue
+		if ! worktree_managed_require_removal_proof "$wt_path"; then
+			_scratch_wt_log "${_WTAR_SKIPPED:-skipped}" "$_SCRATCH_WT_CALLER" "$wt_path" \
+				"scratch-managed-proof-unavailable" "owner=dead recovery_path=none"
+			continue
+		fi
 		_scratch_wt_unlock_and_remove "$wt_path" "$reason" "$_SCRATCH_WT_CALLER" \
 			"owner=dead recovery_path=none stale_minutes=${stale_minutes}" || true
 	done
