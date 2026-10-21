@@ -6,25 +6,18 @@
 import json
 import os
 from pathlib import Path
-import subprocess
 
 from worktree_archive_readiness import (
     OPAQUE_ADMIN_FILES,
     read_admin_bytes, validate_readiness_payload,
 )
+from worktree_archive_git import (
+    auto_merge_oid as auto_merge_oid, git as git,
+    validate_auto_merge as validate_auto_merge,
+)
 
 
-def git(root, *args, data=None):
-    environment = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1")
-    for name in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
-                 "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
-        environment.pop(name, None)
-    return subprocess.run(["git", "-C", str(root), *args], input=data, env=environment,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          check=True, timeout=60).stdout
-
-
-ADMIN_FILES = {"HEAD", "index", "ORIG_HEAD", "FETCH_HEAD", "COMMIT_EDITMSG", "SQUASH_MSG", "MERGE_MSG", "config.worktree", "logs/HEAD"} | OPAQUE_ADMIN_FILES
+ADMIN_FILES = {"HEAD", "index", "AUTO_MERGE", "ORIG_HEAD", "FETCH_HEAD", "COMMIT_EDITMSG", "SQUASH_MSG", "MERGE_MSG", "config.worktree", "logs/HEAD"} | OPAQUE_ADMIN_FILES
 PRIVATE_PREFIXES = ("refs/worktree/", "refs/bisect/", "refs/rewritten/")
 OPERATIONS = {"MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD",
               "rebase-merge", "rebase-apply", "sequencer", "BISECT_LOG"}
@@ -102,6 +95,8 @@ def administration(root):
     common = Path(os.fsdecode(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").rstrip(b"\n")))
     files = administration_files(admin, admin, admin.resolve() != common.resolve())
     fetch_head_roots(files.get("FETCH_HEAD", ""))
+    if "AUTO_MERGE" in files:
+        validate_auto_merge(root, auto_merge_oid(bytes.fromhex(files["AUTO_MERGE"])))
     if git(root, "rev-parse", "--shared-index-path").strip():
         raise ValueError("git_admin:split_index:index")
     validate_admin_config(root, admin)
@@ -130,6 +125,8 @@ def load_administration(archive):
         validate_readiness_payload(name, value)
         bytes.fromhex(value)
     fetch_head_roots(state["files"].get("FETCH_HEAD", ""))
+    if "AUTO_MERGE" in state["files"]:
+        auto_merge_oid(bytes.fromhex(state["files"]["AUTO_MERGE"]))
     for name, oid in state["refs"].items():
         if (not any(name.startswith(prefix) for prefix in PRIVATE_PREFIXES)
                 or ".." in Path(name).parts or Path(name).is_absolute()):

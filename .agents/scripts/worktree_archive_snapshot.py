@@ -17,7 +17,6 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import tempfile
 
 from worktree_archive_filesystem import (
     fingerprint, supported_directories,
@@ -27,12 +26,18 @@ from worktree_archive_administration import (
     ADMIN_FILES, administration, git, load_administration,
     OPERATIONS as OPERATIONS,
 )
-from worktree_archive_state import inventories, supported_state
+from worktree_archive_state import auto_merge, inventories, supported_state
 from worktree_archive_index import (
     archive_policies as archive_policies, git_index_state as git_index_state,
 )
 from worktree_archive_objects import (
-    administration_roots, bundle_roots, verify_git_objects as verify_git_objects,
+    administration_roots, bundle_roots, capture_auto_merge,
+    verify_auto_merge as verify_auto_merge,
+    verify_git_objects as verify_git_objects,
+)
+from worktree_archive_auto_merge import restore_auto_merge as restore_auto_merge
+from worktree_archive_git import (
+    capture_bundle as capture_bundle, fetch_preservation as fetch_preservation,
 )
 
 
@@ -58,30 +63,6 @@ def capture_administration(root, archive, include_ignored, base=''):
     (archive / 'git-admin.json').write_text(json.dumps(state, sort_keys=True) + '\n', encoding='ascii')
 
 
-def capture_bundle(root, archive, roots, base):
-    # Scratch refs make every root (including index-only blobs) a named bundle
-    # tip. All writes go to scratch; the source object database is read-only.
-    with tempfile.TemporaryDirectory(prefix=".admin-bundle-", dir=archive.parent) as temporary:
-        scratch = Path(temporary)
-        object_format = git(root, 'rev-parse', '--show-object-format').strip().decode('ascii')
-        git(scratch, "init", "--bare", "--quiet", f'--object-format={object_format}')
-        objects = git(root, "rev-parse", "--path-format=absolute", "--git-path", "objects").rstrip(b"\n")
-        (scratch / "objects/info/alternates").write_bytes(objects + b"\n")
-        updates = ''.join(f'update refs/archive/{number} {oid}\n'
-                          for number, oid in enumerate(roots))
-        git(scratch, "update-ref", "--stdin", data=updates.encode('ascii'))
-        git(scratch, "update-ref", "refs/heads/archive-head", git(root, "rev-parse", "HEAD").strip().decode("ascii"))
-        exclusions = (f'^{base}',) if base else ()
-        git(scratch, "bundle", "create", str(archive / "commits.bundle"), "--all", *exclusions)
-
-
-def fetch_preservation(root, archive):
-    bundle = archive / 'commits.bundle'
-    if bundle.is_file():
-        git(root, 'fetch', '--quiet', '--no-write-fetch-head', str(bundle),
-            '+refs/archive/*:refs/archive/*')
-
-
 def seed_base(root, manifest):
     """Import only the recorded base graph, never unrelated source objects."""
     base = manifest['base_sha']
@@ -101,7 +82,8 @@ def prepare_incremental_restore(archive, target):
     object_format = 'sha256' if len(manifest['head_sha']) == 64 else 'sha1'
     git(target, 'init', '--quiet', f'--object-format={object_format}')
     seed_base(target, manifest)
-    if manifest.get('capture_policy') == 'git-only':
+    if (manifest.get('capture_policy') == 'git-only'
+            and manifest.get('source_fingerprint', {}).get('auto_merge') is None):
         if (archive / 'commits.bundle').is_file():
             git(target, 'fetch', '--quiet', '--no-write-fetch-head',
                 str(archive / 'commits.bundle'), 'HEAD:refs/archive/head')
@@ -166,6 +148,9 @@ def git_snapshot(path, patches=None, metadata=None, include_untracked=True):
     result = {"schema": 2, "policy": "git-only", "head": head, "files": metadata["files"],
               "bytes": len(staged) + len(unstaged),
               "sha256": hashlib.sha256(json.dumps(values).encode("ascii")).hexdigest()}
+    oid = auto_merge(root)
+    if oid is not None:
+        result['auto_merge'] = oid
     if include_untracked:
         paths = sorted(filter(None, git(root, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0")))
         size = sum((root / os.fsdecode(raw)).lstat().st_size for raw in paths)
@@ -202,24 +187,25 @@ def snapshot(path, preserve_git_admin=False, include_ignored=False, git_only=Fal
 
 def main(argv):
     command = argv[0] if argv else ''
-    if command == "admin-capture" and len(argv) in (4, 5):
+    if command == 'auto-merge-capture' and len(argv) == 4:
+        capture_auto_merge(Path(argv[1]), Path(argv[2]).resolve(), argv[3])
+    elif command == 'auto-merge-restore' and len(argv) == 3:
+        restore_auto_merge(Path(argv[1]), Path(argv[2]).resolve())
+    elif command == "admin-capture" and len(argv) in (4, 5):
         capture_administration(Path(argv[1]), Path(argv[2]).resolve(), argv[3] == "1", *argv[4:])
-        return 0
-    if command == 'admin-prepare-restore' and len(argv) == 3:
+    elif command == 'admin-prepare-restore' and len(argv) == 3:
         prepare_incremental_restore(Path(argv[1]).resolve(), Path(argv[2]).resolve())
-        return 0
-    if command == "admin-restore" and len(argv) == 3:
+    elif command == "admin-restore" and len(argv) == 3:
         restore_administration(Path(argv[1]), Path(argv[2]).resolve())
-        return 0
-    if command == "admin-verify" and len(argv) == 2:
+    elif command == "admin-verify" and len(argv) == 2:
         load_administration(Path(argv[1]))
-        return 0
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--preserve-git-admin", action="store_true")
-    parser.add_argument("--include-ignored", action="store_true")
-    parser.add_argument("worktree")
-    args = parser.parse_args(argv)
-    print(json.dumps(snapshot(args.worktree, args.preserve_git_admin, args.include_ignored), sort_keys=True))
+    else:
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument("--preserve-git-admin", action="store_true")
+        parser.add_argument("--include-ignored", action="store_true")
+        parser.add_argument("worktree")
+        args = parser.parse_args(argv)
+        print(json.dumps(snapshot(args.worktree, args.preserve_git_admin, args.include_ignored), sort_keys=True))
     return 0
 
 

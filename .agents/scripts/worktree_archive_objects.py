@@ -7,7 +7,12 @@ from pathlib import Path
 import re
 import tempfile
 
-from worktree_archive_administration import fetch_head_roots, git, load_administration
+from worktree_archive_administration import (
+    auto_merge_oid, fetch_head_roots, git, load_administration,
+)
+from worktree_archive_auto_merge import (
+    capture_auto_merge as capture_auto_merge, verify_auto_merge,
+)
 
 
 def index_roots(root):
@@ -34,6 +39,8 @@ def administration_roots(root, state, include_index=True):
                 roots.update(part.decode("ascii") for part in line.split()[:2] if set(part) != {48})
         elif name == "ORIG_HEAD":
             roots.add(data.strip().decode("ascii"))
+        elif name == "AUTO_MERGE":
+            roots.add(auto_merge_oid(data))
     if include_index:
         roots.update(index_roots(root))
     for oid in roots:
@@ -56,7 +63,7 @@ def bundle_roots(root, state):
 def verify_object_graph(archive, scratch, manifest):
     # Load restoration helpers only at verification time; snapshot construction
     # also uses this module's dependency selectors.
-    from worktree_archive_snapshot import seed_base, verify_administration
+    from worktree_archive_snapshot import fetch_preservation, seed_base, verify_administration
     bundle = archive / 'commits.bundle'
     object_format = 'sha256' if len(manifest['head_sha']) == 64 else 'sha1'
     git(scratch, 'init', '--bare', '--quiet', '--object-format=' + object_format)
@@ -68,8 +75,12 @@ def verify_object_graph(archive, scratch, manifest):
         verify_administration(archive, scratch, manifest)
     elif manifest.get('capture_policy') == 'git-only':
         if bundle.is_file():
-            git(scratch, 'fetch', '--quiet', '--no-write-fetch-head', str(bundle), 'HEAD:refs/archive/head')
+            if manifest.get('source_fingerprint', {}).get('auto_merge') is not None:
+                fetch_preservation(scratch, archive)
+            else:
+                git(scratch, 'fetch', '--quiet', '--no-write-fetch-head', str(bundle), 'HEAD:refs/archive/head')
         git(scratch, 'cat-file', '-e', manifest['head_sha'] + '^{commit}')
+        verify_auto_merge(scratch, archive, manifest)
 
 
 def verify_git_objects(archive, manifest):

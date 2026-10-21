@@ -6,7 +6,10 @@
 import os
 from pathlib import Path
 
-from worktree_archive_administration import administration, git
+from worktree_archive_administration import (
+    administration, git,
+)
+from worktree_archive_auto_merge import auto_merge as auto_merge
 
 
 def inventories(root, include_ignored=False):
@@ -56,6 +59,8 @@ def supported_state(root, preserve_git_admin=False, include_ignored=False):
 
 
 def supported_administration(root, admin):
+    if auto_merge(root) is not None:
+        raise ValueError('AUTO_MERGE requires the unified metadata preservation path')
     common = Path(os.fsdecode(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").rstrip(b"\n")))
     if admin.resolve() == common.resolve():
         # Independent restores are full repositories. Managed source enrollment
