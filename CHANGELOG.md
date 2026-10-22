@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.55] - 2026-10-22
+
+### Added
+
+- reclaim ignored artefacts in idle linked worktrees via aidevops cleanup artefacts
+
+### Changed
+
+- Documentation: tighten worktree recovery contracts (GH#35332) (#35333)
+- CI: add PR secretlint gate sharing release preflight runtime (#35330)
+- Maintenance: mark t18753 complete (pr:#35327 completed:2026-10-21) (#35324)
+
 ## [3.39.54] - 2026-10-21
 
 ### Added
