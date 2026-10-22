@@ -32,13 +32,14 @@ from worktree_archive_merge_cases import MergeCases
 from worktree_archive_canonical_cases import CanonicalCases
 from worktree_archive_administration_cases import AdministrationCases
 from worktree_recovery_report_cases import RecoveryReportCases
+from worktree_archive_metadata_cases import MetadataCases
 
 
 class LegacyRecoveryReport(RecoveryReportCases, unittest.TestCase):
     pass
 
 
-class ArchiveLifecycle(AdministrationCases, CanonicalCases, MergeCases, ProducerCases, unittest.TestCase):
+class ArchiveLifecycle(AdministrationCases, CanonicalCases, MergeCases, ProducerCases, MetadataCases, unittest.TestCase):
     def setUp(self):
         self.addCleanup(os.umask, os.umask(0o022))
         self.temp = tempfile.TemporaryDirectory(prefix="archive-lifecycle-")
@@ -105,6 +106,7 @@ class ArchiveLifecycle(AdministrationCases, CanonicalCases, MergeCases, Producer
 
     def test_managed_merge_requires_restore_and_rejects_drift(self):
         self.start_conflicted_merge()
+        (self.work / 'mixed.txt').chmod(0o600)
         managed = self.managed_fixture()
         archive = self.prepare_managed(managed)
         record = self.managed_record(managed)
@@ -397,6 +399,20 @@ class ArchiveLifecycle(AdministrationCases, CanonicalCases, MergeCases, Producer
         self.assertEqual((target / "mixed.txt").read_bytes(), b"unstaged\n")
         self.assertEqual(self.git(target, "show", ":mixed.txt"), b"staged\n")
         self.assertFalse((target / "local.ignored").exists())
+
+    def test_legacy_pulse_private_tracked_mode_requires_independent_restore(self):
+        (self.work / "mixed.txt").chmod(0o600)
+        bucket = self.legacy_pulse_bucket()
+        migration = json.loads(self.migrate_bucket(bucket).stdout)
+        archive = Path(migration["archive"])
+        self.helper("verify", archive)
+        plan = json.loads(self.retirement("retire-plan", bucket).stdout)
+        result = json.loads(self.retirement("retire", bucket, "--confirm", plan["confirmation_token"]).stdout)
+        self.assertTrue(result["retired"])
+        self.assertFalse(bucket.exists())
+        target = self.root / "restored-private-legacy"
+        self.helper("restore", archive, "--target", target)
+        self.assertEqual(stat.S_IMODE((target / "mixed.txt").stat().st_mode), 0o644)
 
     def test_legacy_pulse_preflight_retains_active_source(self):
         bucket = self.legacy_pulse_bucket()
@@ -1095,15 +1111,15 @@ class ArchiveLifecycle(AdministrationCases, CanonicalCases, MergeCases, Producer
         self.assertEqual(len(list(self.archives.rglob('manifest.partial'))), 1)
         self.assertTrue(bucket.is_dir())
 
-    def test_legacy_migration_keeps_unsupported_permissions(self):
+    def test_legacy_migration_preserves_untracked_permissions_in_tar(self):
         (self.work / "local.txt").write_bytes(b"private fixture")
         (self.work / "local.txt").chmod(0o600)
         bucket = self.legacy_bucket()
-        failure = self.migrate_bucket(bucket, check=False)
-        self.assertNotEqual(failure.returncode, 0)
-        self.assertIn(b"special permissions", failure.stdout)
-        self.assertFalse(list((bucket.parent / ".compact-migrations").rglob("journal.json")))
-        self.assertFalse(list(self.archives.rglob("manifest.json")))
+        migration = json.loads(self.migrate_bucket(bucket).stdout)
+        restored = self.root / "restored-untracked-mode"
+        self.helper("restore", migration["archive"], "--target", restored)
+        self.assertEqual(stat.S_IMODE((restored / "local.txt").stat().st_mode), 0o600)
+        self.assertEqual((restored / "local.txt").read_bytes(), b"private fixture")
         self.assertTrue(bucket.is_dir())
 
     def test_legacy_migration_rejects_incomplete_and_missing_base(self):
@@ -1727,20 +1743,6 @@ class ArchiveLifecycle(AdministrationCases, CanonicalCases, MergeCases, Producer
             self.prepare_managed(managed)
         self.assertNotIn("archive_operation", self.managed_record(managed))
         self.assertTrue((self.work / "large-untracked.bin").exists())
-
-    def test_special_metadata_is_protected_before_sealing(self):
-        managed = self.managed_fixture()
-        target = self.work / "untracked.txt"
-        target.write_text("unique local content\n")
-        target.chmod(0o600)
-        with self.assertRaisesRegex(ValueError, "permissions"):
-            self.prepare_managed(managed)
-        target.chmod(0o644)
-        os.link(target, self.work / "hard-link")
-        with self.assertRaisesRegex(ValueError, "hard links"):
-            self.prepare_managed(managed)
-        self.assertEqual(self.managed_record(managed)["state"], "created")
-        self.assertNotIn("archive_operation", self.managed_record(managed))
 
     def test_unknown_git_administration_and_squash_drafts_are_preserved(self):
         managed = self.managed_fixture()
