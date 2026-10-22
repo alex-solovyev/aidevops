@@ -79,7 +79,20 @@ write_fake_docker() {
 	cat >"${bin_dir}/docker" <<'DOCKER'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "buildx" ]]; then
+	[[ "${FAKE_BUILDX:-}" == available ]] || exit 1
+	[[ "${2:-}" == version ]] && exit 0
+	[[ "${2:-}" == imagetools && "${3:-}" == inspect ]] || exit 1
+	[[ "${5:-}" == --format && "${6:-}" == '{{json .Manifest.MediaType}}' ]] || exit 1
+	[[ "${4:-}" != *"unavailable"* ]]
+	exit $?
+fi
 [[ "${1:-}" == "manifest" && "${2:-}" == "inspect" ]] || exit 1
+if [[ "${FAKE_BUILDX:-}" == available ]]; then
+	# Reject valid OCI sources, but accept unavailable sources to catch fallback.
+	[[ "${3:-}" == *"unavailable"* ]]
+	exit $?
+fi
 [[ "${3:-}" != *"unavailable"* ]]
 DOCKER
 	chmod +x "${bin_dir}/docker"
@@ -194,7 +207,16 @@ test_release_preflight_validates_immutable_sources() {
 	make_fixture "$repo_dir"
 	write_fake_docker "$bin_dir"
 	PATH="${bin_dir}:$PATH" run_helper "$repo_dir" preflight-release v1.0.0 >/dev/null && pass "available immutable sources pass preflight" || fail "available immutable sources pass preflight"
+	FAKE_BUILDX=available PATH="${bin_dir}:$PATH" run_helper "$repo_dir" preflight-release v1.0.0 >/dev/null && pass "Buildx resolves sources rejected by legacy manifest inspection" || fail "Buildx resolves sources rejected by legacy manifest inspection"
 	printf 'FROM example/unavailable:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nFROM %s\n' "$PINNED_BASE" >"${repo_dir}/Dockerfile"
+	local output=""
+	if output=$(FAKE_BUILDX=available PATH="${bin_dir}:$PATH" run_helper "$repo_dir" preflight-release v1.0.0 2>&1); then
+		fail "Buildx unavailable immutable source blocks preflight"
+	elif [[ "$output" == *"Immutable Docker source is unavailable"* ]]; then
+		pass "Buildx unavailable immutable source reports expected error"
+	else
+		fail "Buildx unavailable immutable source reports expected error"
+	fi
 	if PATH="${bin_dir}:$PATH" run_helper "$repo_dir" preflight-release v1.0.0 >/dev/null 2>&1; then
 		fail "unavailable immutable source blocks preflight"
 	else
