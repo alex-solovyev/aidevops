@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.56] - 2026-10-22
+
+### Changed
+
+- Documentation: add Pulse host rollout procedure and canary record (#35357)
+- Maintenance: mark t18755 complete (pr:#35338 completed:2026-10-22) (#35340)
+- Maintenance: sync GitHub issue refs to TODO.md (#35341)
+
+### Fixed
+
+- pass self login to trusted comment fetch in _tbr_check_entry (GH#35355) (#35356)
+- reuse immutable integration recovery decisions (GH#35353) (#35354)
+- bound refill-only lock hold and evaluate routines while the lock is busy (#35351)
+- verify-issue-close-helper matches glob Files Scope entries (#35350)
+- resolve OCI release sources with buildx (#35347)
+- accept safe glob-only brief Files Scope (GH#35345) (#35348)
+- bind unscoped ownership-loss diagnostics in checkpoint recovery
+
 ## [3.39.55] - 2026-10-22
 
 ### Added
