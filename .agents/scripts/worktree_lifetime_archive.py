@@ -24,6 +24,7 @@ import time
 import uuid
 
 from worktree_archive_snapshot import git, git_snapshot, snapshot
+from worktree_recovery_timing import child_environment, context as timing_context, operation as timed_operation, phase
 
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -64,9 +65,11 @@ def helper(*arguments):
     for name in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
                  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
         environment.pop(name, None)
-    result = subprocess.run(["bash", str(SCRIPTS / "worktree-archive-helper.sh"), *arguments],
-                            env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, check=True, timeout=180)
+    with phase("archive-cli." + arguments[0]):
+        child_environment(environment)
+        result = subprocess.run(["bash", str(SCRIPTS / "worktree-archive-helper.sh"), *map(str, arguments)],
+                                env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, check=True, timeout=180)
     return result.stdout.strip()
 
 
@@ -91,7 +94,7 @@ def operation_directory(value):
     return directory
 
 
-def require_verified(record, source=True):
+def require_verified(record, source=True, proof=None):
     """Gate used by native removal as well as retries; absence preserves old API."""
     if "archive_operation" not in record:
         return
@@ -103,8 +106,8 @@ def require_verified(record, source=True):
             "archive location changed")
     manifest = archive / "manifest.json"
     require(hashlib.sha256(manifest.read_bytes()).hexdigest() == value["manifest_sha256"], "archive manifest changed")
-    helper("verify", str(archive))
-    require(hashlib.sha256(manifest.read_bytes()).hexdigest() == value["manifest_sha256"], "archive changed during verification")
+    from worktree_archive_receipt import verify_restoration_receipt
+    verify_restoration_receipt(record, value, archive, proof)
     if source:
         observe = git_snapshot if value["snapshot"].get("schema") in (3, 4) else snapshot
         require(observe(record["identity"]["path"]) == value["snapshot"], "source changed since verified restoration")
@@ -243,24 +246,48 @@ def construct(managed, path, record, arguments):
     else:
         archive_args.extend(["--unattributed", "--reason", "unattributed-worktree"])
     archive = Path(helper(*archive_args))
-    helper("verify", str(archive))
     manifest_digest = hashlib.sha256((archive / "manifest.json").read_bytes()).hexdigest()
-    target = directory / "restore"
-    helper("restore", str(archive), "--target", str(target), "--verification-copy")
-    require(git_snapshot(target) == baseline and git_snapshot(path) == baseline, "restoration or source comparison failed")
     durable_archive(archive)
-    helper("verify", str(archive))
-    require(hashlib.sha256((archive / "manifest.json").read_bytes()).hexdigest() == manifest_digest,
-            "archive changed during independent restoration")
     record = update(managed, path, value["id"], {
-        "phase": "restore-verified", "archive": str(archive), "restore_inode": inode(target),
-        "manifest_sha256": manifest_digest,
-        "restored_at": time.time(),
+        "archive": str(archive), "manifest_sha256": manifest_digest,
     })
-    return finish_scratch(managed, path, record)
+    return canonical_restore(managed, path, record)
 
 
+def canonical_restore(managed, path, record):
+    from worktree_archive_restore import RestorationProof
+    value = operation(record)
+    with transaction() as connection:
+        current = managed.load(connection, str(path))
+        live = operation(current)
+        require(live["id"] == value["id"], "archive operation replaced")
+        require(live["owner_pid"] == os.getpid() or not owner_active(managed, live), "archive owner remains active")
+        live.update(owner_pid=os.getpid(), owner_boot=managed.boot_id())
+        managed.save(connection, current)
+    value = operation(current)
+    directory = operation_directory(value)
+    data = {"archive": value["archive"], "manifest_sha256": value["manifest_sha256"],
+            "source": {"identity": record["identity"], "generation": record["generation"],
+                       "snapshot": value["snapshot"]}, "canonical_restore": value.get("canonical_restore"),
+            "directory_inode": value["directory_inode"]}
+
+    def save(updated):
+        receipt = updated["canonical_restore"]
+        changes = {"canonical_restore": receipt}
+        if receipt["state"] in ("compared", "cleanup-pending", "cleaned"):
+            changes["phase"] = "restore-verified"
+        update(managed, path, value["id"], changes)
+
+    proof = RestorationProof(directory, data, helper, save)
+    require(git_snapshot(path) == value["snapshot"], "source changed since verified restoration")
+    proof.check()
+    record = update(managed, path, value["id"], {"phase": "verified", "verified_at": time.time()})
+    return record, proof
+
+
+@timed_operation("managed-archive-prepare")
 def prepare(managed, path, arguments):
+    timing_context(repo=arguments.repo, source=str(path))
     root = Path(os.environ.get("AIDEVOPS_WORKTREE_ARCHIVE_ROOT") or Path.home() / ".aidevops/recovery/archives") / ".lifecycle"
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     root = root.resolve(strict=True)
@@ -268,17 +295,22 @@ def prepare(managed, path, arguments):
     required_capacity = capacity(path, baseline)
     record, fresh = initialize(managed, path, root, required_capacity, getattr(arguments, "idle_seconds", 86400))
     value = operation(record)
+    proof = None
     if fresh:
         try:
-            record = construct(managed, path, record, arguments)
+            record, proof = construct(managed, path, record, arguments)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             record_failure(managed, path, value["id"], error)
             raise
+    elif value["phase"] in ("building", "restore-verified") and "canonical_restore" in value:
+        record, proof = canonical_restore(managed, path, record)
     elif value["phase"] == "restore-verified":
         record = finish_scratch(managed, path, record)
     else:
         require(value["phase"] == "verified", "incomplete archive attempt retained; no duplicate allocation")
-    require_verified(record)
+    if "canonical_restore" not in operation(record):
+        record, proof = canonical_restore(managed, path, record)
+    require_verified(record, proof=proof)
     return operation(record)["archive"]
 
 

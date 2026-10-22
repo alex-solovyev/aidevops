@@ -13,7 +13,6 @@ import shutil
 import stat
 import subprocess  # nosec B404 -- fixed framework helper, argv only; see archive_command
 import sys
-import tempfile
 
 from worktree_lifetime_archive import capacity, durable_archive, inode, require
 from worktree_recovery_legacy_policy import candidate, guards, has_lifecycle, validate
@@ -22,7 +21,7 @@ from worktree_recovery_migration_state import (
     SCHEMA, allocated_bytes, load, manifest_digest, private_directory,
     publish, source_state,
 )
-from worktree_recovery_timing import context as timing_context, operation, phase, timed
+from worktree_recovery_timing import child_environment, context as timing_context, operation, phase, timed
 
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -38,6 +37,7 @@ def archive_command(lock, *arguments):
     bash = shutil.which("bash")
     require(bash is not None, "migration:bash-unavailable")
     with phase("archive-cli." + str(arguments[0])):
+        child_environment(environment)
         result = subprocess.run(  # nosec B603 -- resolved Bash, framework helper, argv only
                                 [str(Path(bash).absolute()), str(SCRIPTS / "worktree-archive-helper.sh"),
                                  *map(str, arguments)], env=environment, pass_fds=(lock,),
@@ -127,20 +127,17 @@ def verify_archive(record, lock, check_source=True):
     require(archive == archive.resolve(strict=True) and archive.is_relative_to(output)
             and inode(output) == record["output_inode"], "migration:archive-path-changed")
     require(manifest_digest(archive) == record["manifest_sha256"], "migration:manifest-changed")
-    archive_command(lock, "verify", archive)
+    if record["source"].get("capture_policy") == "git-only":
+        from worktree_archive_restore import RestorationProof
+        bucket = Path(record["source"]["identity"]["bucket_path"])
+        directory = bucket.parent / ".compact-migrations" / bucket.name
+        RestorationProof(directory, record, lambda *args: archive_command(lock, *args),
+                         lambda value: publish(directory / "journal.json", value))
+    else:
+        archive_command(lock, "verify", archive)
     require(manifest_digest(archive) == record["manifest_sha256"], "migration:manifest-changed")
     require((archive / ".aidevops-archive-pin").is_file()
             and not (archive / ".aidevops-archive-pin").is_symlink(), "migration:pin-missing")
-    if record['source']['snapshot'].get('schema') == 4:
-        from worktree_archive_snapshot import git_snapshot
-        # Merge retirement needs executable reconstruction evidence, not just
-        # a valid bundle. Repeat under the existing operation lock so an older
-        # archived receipt can never be reinterpreted as restore verification.
-        with tempfile.TemporaryDirectory(prefix='.merge-verify-', dir=output) as temporary:
-            restored = Path(temporary) / 'restore'
-            archive_command(lock, 'restore', archive, '--target', restored, '--verification-copy')
-            require(git_snapshot(restored) == record['source']['snapshot'], 'migration:merge-restore-mismatch')
-        require(manifest_digest(archive) == record['manifest_sha256'], 'migration:manifest-changed')
     if check_source:
         require(source_state(record["source"]["identity"], record["source"].get("capture_policy") == "git-only",
                              record["source"]["snapshot"].get("schema"))

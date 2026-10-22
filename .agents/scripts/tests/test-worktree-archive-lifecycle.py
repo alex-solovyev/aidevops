@@ -31,6 +31,7 @@ import worktree_recovery_legacy_report as legacy_report
 from worktree_archive_administration import administration_files
 from worktree_recovery_producer_cases import ProducerCases
 from worktree_archive_merge_cases import MergeCases
+from worktree_archive_canonical_cases import CanonicalCases
 
 
 class ArchiveAdministration(unittest.TestCase):
@@ -168,7 +169,7 @@ class LegacyRecoveryReport(unittest.TestCase):
             self.assertFalse((root / "missing.db").exists())
 
 
-class ArchiveLifecycle(MergeCases, ProducerCases, unittest.TestCase):
+class ArchiveLifecycle(CanonicalCases, MergeCases, ProducerCases, unittest.TestCase):
     def setUp(self):
         self.addCleanup(os.umask, os.umask(0o022))
         self.temp = tempfile.TemporaryDirectory(prefix="archive-lifecycle-")
@@ -1544,26 +1545,32 @@ class ArchiveLifecycle(MergeCases, ProducerCases, unittest.TestCase):
             self.prepare_managed(managed)
         operation = self.managed_record(managed)["archive_operation"]
         self.assertEqual(operation["phase"], "building")
-        with self.assertRaisesRegex(ValueError, "no duplicate allocation"):
-            self.prepare_managed(managed)
-        self.assertEqual(len(list((self.archives / ".lifecycle").iterdir())), 1)
-        self.assertTrue(self.work.is_dir())
+        slot = Path(operation["directory"]) / operation["canonical_restore"]["slot"]
         proof = HELPER.with_name("worktree-managed-lifetime.py")
         self.assertNotEqual(self.run_command(sys.executable, proof, "proof", self.work, check=False).returncode, 0)
+        # The journal owns an empty slot, so pre-creation interruption can safely
+        # restart without adopting mutable contents or allocating another archive.
+        self.prepare_managed(managed)
+        self.assertFalse(slot.exists())
+        self.assertEqual(len(list((self.archives / ".lifecycle").iterdir())), 1)
+        self.assertTrue(self.work.is_dir())
+        self.assertEqual(self.managed_record(managed)["archive_operation"]["phase"], "verified")
 
     def test_verified_scratch_cleanup_failure_is_resumable(self):
+        from worktree_archive_restore import RestorationProof
         managed = self.managed_fixture()
-        with patch.object(lifecycle.shutil, "rmtree", side_effect=OSError("scratch cleanup unavailable")), self.assertRaises(OSError):
+        with patch.object(RestorationProof, "cleanup", side_effect=OSError("scratch cleanup unavailable")), self.assertRaises(OSError):
             self.prepare_managed(managed)
         operation = self.managed_record(managed)["archive_operation"]
         self.assertEqual(operation["phase"], "restore-verified")
-        self.assertTrue((Path(operation["directory"]) / "restore").exists())
+        slot = Path(operation["directory"]) / operation["canonical_restore"]["slot"]
+        self.assertTrue((slot / "worktree").exists())
         proof = HELPER.with_name("worktree-managed-lifetime.py")
         self.assertNotEqual(self.run_command(sys.executable, proof, "proof", self.work, check=False).returncode, 0)
         archive = self.prepare_managed(managed)
         self.assertEqual(str(archive), operation["archive"])
         self.assertEqual(self.managed_record(managed)["archive_operation"]["phase"], "verified")
-        self.assertFalse((Path(operation["directory"]) / "restore").exists())
+        self.assertFalse(slot.exists())
         self.assertTrue(self.work.is_dir())
 
     def test_failed_durability_never_publishes_removal_receipt(self):

@@ -22,6 +22,7 @@ import subprocess  # nosec B404 -- subprocess errors only; execution uses the sh
 import sys
 
 from worktree_archive_snapshot import git, git_snapshot, snapshot
+from worktree_archive_restore import RestorationProof
 from worktree_lifetime_archive import capacity, durable_archive, inode, require
 from worktree_recovery_migrate import archive_command
 from worktree_recovery_migration_scratch import finish_scratch, prepare_restore, verify_restore
@@ -279,6 +280,7 @@ def prepare(source, root, caller, context):
         return record["archive"]
 
 
+@operation("producer-validation")
 def check(archive, source=None, removed=False):
     require(archive == archive.resolve(strict=True), "producer:archive-path-changed")
     journal = journal_for_archive(archive)
@@ -286,10 +288,15 @@ def check(archive, source=None, removed=False):
     directory = journal.parent
     with operation_lock(directory) as lock:
         record = load(journal, SCHEMA)
+        timing_context(repo=record["repo"], archive=str(archive), source=record["source"]["identity"]["path"])
         git_only = record["source"].get("capture_policy") == "git-only"
         require(record["directory_inode"] == inode(directory) and record["archive"] == str(archive)
                  and record["phase"] == ("archived" if git_only else "verified"), "producer:incomplete-receipt")
-        verify_archive(record, lock)
+        if git_only:
+            RestorationProof(directory, record, lambda *args: archive_command(lock, *args),
+                             lambda value: publish(journal, value))
+        else:
+            verify_archive(record, lock)
         if source is not None:
             require(source_state(source, "git-only" if git_only else "preserve-v1",
                                  record["source"]["snapshot"].get("schema")) == record["source"], "producer:source-drift")
