@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.59] - 2026-10-23
+
+### Fixed
+
+- serialize plugin validation under high host load (GH#35499) (#35504)
+- reject unsignable requests and enable SEO browser routing (#35501)
+- bound enrichment retries and seal managed worktrees
+- t18762 split session retention — workers 7 days, interactive 90 days (GH#35492)
+
 ## [3.39.58] - 2026-10-23
 
 ### Added
