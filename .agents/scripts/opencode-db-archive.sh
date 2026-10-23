@@ -299,6 +299,7 @@ _archive_migrate_schema_columns() {
 	local archive_db="$1"
 	local project_columns=""
 	local session_columns=""
+	local epoch_columns=""
 	local table_name=""
 	local column_name=""
 	local column_definition=""
@@ -308,11 +309,13 @@ _archive_migrate_schema_columns() {
 
 	project_columns=$(opencode_db_table_columns "$archive_db" project) || return 1
 	session_columns=$(opencode_db_table_columns "$archive_db" "$SESSION_TABLE_NAME") || return 1
+	epoch_columns=$(opencode_db_table_columns "$archive_db" session_context_epoch) || return 1
 	while IFS='|' read -r table_name column_name column_definition; do
 		[[ -n "$table_name" && -n "$column_name" && -n "$column_definition" ]] || continue
 		case "$table_name" in
 		project) table_columns="$project_columns" ;;
 		"$SESSION_TABLE_NAME") table_columns="$session_columns" ;;
+		session_context_epoch) table_columns="$epoch_columns" ;;
 		*) return 1 ;;
 		esac
 		if ! _archive_column_list_has "$table_columns" "$column_name"; then
@@ -331,6 +334,9 @@ ${SESSION_TABLE_NAME}|tokens_reasoning|${ARCHIVE_INTEGER_COLUMN_DEFINITION}
 ${SESSION_TABLE_NAME}|tokens_cache_read|${ARCHIVE_INTEGER_COLUMN_DEFINITION}
 ${SESSION_TABLE_NAME}|tokens_cache_write|${ARCHIVE_INTEGER_COLUMN_DEFINITION}
 ${SESSION_TABLE_NAME}|metadata|${ARCHIVE_TEXT_COLUMN_DEFINITION}
+session_context_epoch|replacement_seq|integer
+session_context_epoch|revision|integer DEFAULT 0 NOT NULL
+session_context_epoch|agent|text DEFAULT 'build' NOT NULL
 MIGRATION_COLUMNS
 
 	[[ -n "$migration_sql" ]] || return 0
@@ -483,6 +489,9 @@ CREATE TABLE IF NOT EXISTS `session_context_epoch` (
 	`baseline` text NOT NULL,
 	`snapshot` text NOT NULL,
 	`baseline_seq` integer NOT NULL,
+	`replacement_seq` integer,
+	`revision` integer DEFAULT 0 NOT NULL,
+	`agent` text DEFAULT 'build' NOT NULL,
 	CONSTRAINT `fk_session_context_epoch_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE
 );
 
@@ -575,12 +584,14 @@ _archive_event_bytes_sql() {
 }
 
 # Both databases have passed schema validation before this is called. Use the
-# archive's column names for both sides, never either database's physical order.
+# source's column names for both sides, never the archive's physical order.
 _archive_copy_sql() {
 	local table_name="$1"
 	local row_filter="$2"
 	local columns=""
-	columns=$(opencode_db_table_columns "$ARCHIVE_DB" "$table_name") || return 1
+	# Select source columns: older active DBs lack defaulted epoch columns in
+	# the evolved archive. Omitting them applies archive defaults without loss.
+	columns=$(opencode_db_table_columns "$ACTIVE_DB" "$table_name") || return 1
 	[[ -n "$columns" ]] || return 1
 	printf 'INSERT OR IGNORE INTO archive.%s (%s) SELECT %s FROM %s WHERE %s;\n' \
 		"$table_name" "$columns" "$columns" "$table_name" "$row_filter"
@@ -902,16 +913,81 @@ _archive_candidate_filter() {
 # --- Archive command ----------------------------------------------------------
 
 cmd_archive_all() {
-	local db rc=0 result=0
+	local db rc=0 result=0 archive_pid=""
+	# Wait asynchronously so Bash handles signals immediately, and forward them
+	# to the per-DB supervisor before releasing the async runner's lock.
+	trap 'kill -TERM "$archive_pid" 2>/dev/null || true; wait "$archive_pid" 2>/dev/null || true; exit 143' TERM
+	trap 'kill -INT "$archive_pid" 2>/dev/null || true; wait "$archive_pid" 2>/dev/null || true; exit 130' INT
 	while IFS= read -r -d '' db; do
 		print_info "Archive inventory: $db"
 		rc=0
 		OPENCODE_DB_PATH="$db" OPENCODE_ARCHIVE_DB="${db%/*}/opencode-archive.db" \
-			bash "${BASH_SOURCE[0]}" archive "$@" || rc=$?
-		# A protected skip is not a failure and must not prevent other DBs running.
-		if [[ "$rc" -ne 0 && "$rc" -ne 2 ]]; then result="$rc"; fi
+			bash "${BASH_SOURCE[0]}" archive "$@" &
+		archive_pid=$!
+		wait "$archive_pid" || rc=$?
+		archive_pid=""
+		print_info "Archive inventory outcome: db=$db rc=$rc (0=complete, 2=protected/deferred, 3=unsupported)"
+		# Continue the fleet, but never record a partial fleet as fully successful.
+		if [[ "$rc" -ne 0 && ( "$result" -eq 0 || "$result" -eq 2 ) ]]; then result="$rc"; fi
 	done < <(opencode_db_inventory "$ACTIVE_DB")
+	trap - INT TERM
 	return "$result"
+}
+
+# Bound the entire per-DB invocation, including candidate scans, integrity
+# checks and compaction. A shell-loop deadline alone cannot interrupt SQLite.
+# Use a private process group so cancellation also reaches SQLite grandchildren;
+# SQLite rolls back an interrupted transaction and retains committed batches.
+_archive_with_deadline() {
+	local duration="$1"
+	shift
+	command -v python3 >/dev/null 2>&1 || {
+		print_error "python3 is required to enforce the archive per-DB deadline"
+		return 1
+	}
+	exec python3 - "$duration" "${BASH_SOURCE[0]}" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+duration = int(sys.argv[1])
+env = dict(os.environ, OPENCODE_ARCHIVE_BUDGET_CHILD="1")
+child = subprocess.Popen(["bash", sys.argv[2], "archive", *sys.argv[3:]],
+                         env=env, start_new_session=True)
+
+def stop(signum, _frame=None):
+    # Ignore repeated signals while draining the owned process group.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        os.killpg(child.pid, signal.SIGTERM)
+        child.wait(timeout=2)
+    except ProcessLookupError:
+        pass
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait()
+    if signum:
+        print(f"Archive interrupted: rc={128 + signum}", flush=True)
+        sys.exit(128 + signum)
+    print(f"Archive deferred/partial: per-DB time budget exhausted ({duration}s); "
+          "committed batches preserved; unfinished work resumes next cycle. rc=2", flush=True)
+    sys.exit(2)
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+try:
+    rc = child.wait(timeout=duration)
+except subprocess.TimeoutExpired:
+    stop(0)
+sys.exit(rc if rc >= 0 else 128 - rc)
+PY
 }
 
 # Expire only archived event payloads, never the saved transcript graph. Freed
@@ -950,6 +1026,7 @@ _archive_expire_events() {
 }
 
 cmd_archive() {
+	local original_args=("$@")
 	# retention_days is the interactive cutoff; worker_retention_days applies to
 	# headless sessions. --retention-days sets both (uniform legacy behaviour).
 	local retention_days="${OPENCODE_DB_ARCHIVE_INTERACTIVE_RETENTION_DAYS:-$DEFAULT_INTERACTIVE_RETENTION_DAYS}"
@@ -1036,6 +1113,10 @@ cmd_archive() {
 	if [[ ! "$WAL_STABILITY_DELAY_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
 		print_error "OPENCODE_DB_WAL_STABILITY_DELAY_SECONDS must be a non-negative number."
 		return 1
+	fi
+	if [[ "${OPENCODE_ARCHIVE_BUDGET_CHILD:-0}" != 1 ]]; then
+		_archive_with_deadline "$max_duration" "${original_args[@]}"
+		return $?
 	fi
 
 	local preflight_rc=0
@@ -1203,7 +1284,7 @@ cmd_archive() {
 		elapsed=$(($(date +%s) - start_time))
 		if ((elapsed >= max_duration)); then
 			print_warning "Time budget exhausted (${elapsed}s >= ${max_duration}s). Archived $archived_total/$total_eligible sessions. Will resume next cycle."
-			break
+			return 2
 		fi
 
 		batch_num=$((batch_num + 1))
@@ -1238,6 +1319,7 @@ cmd_archive() {
 		local event_sequence_copy_sql="" event_sequence_delete_sql=""
 		local event_copy_sql="" event_delete_sql=""
 		local session_row_filter="session_id IN ($in_clause)"
+		local aggregate_row_filter="aggregate_id IN ($in_clause)"
 		if ((has_session_message_table)); then
 			session_message_copy_sql=$(_archive_copy_sql session_message "$session_row_filter") || return 1
 			session_message_delete_sql="DELETE FROM session_message WHERE session_id IN ($in_clause);"
@@ -1251,11 +1333,11 @@ cmd_archive() {
 			context_epoch_delete_sql="DELETE FROM session_context_epoch WHERE session_id IN ($in_clause);"
 		fi
 		if ((has_event_sequence_table)); then
-			event_sequence_copy_sql=$(_archive_copy_sql event_sequence "aggregate_id IN ($in_clause)") || return 1
+			event_sequence_copy_sql=$(_archive_copy_sql event_sequence "$aggregate_row_filter") || return 1
 			event_sequence_delete_sql="DELETE FROM event_sequence WHERE aggregate_id IN ($in_clause);"
 		fi
 		if ((has_event_table)); then
-			event_copy_sql=$(_archive_copy_sql event "aggregate_id IN ($in_clause)") || return 1
+			event_copy_sql=$(_archive_copy_sql event "$aggregate_row_filter") || return 1
 			event_delete_sql="DELETE FROM event WHERE aggregate_id IN ($in_clause);"
 		fi
 
@@ -1265,14 +1347,28 @@ cmd_archive() {
 		todo_copy_sql=$(_archive_copy_sql todo "$session_row_filter") || return 1
 		share_copy_sql=$(_archive_copy_sql session_share "$session_row_filter") || return 1
 
-		# Single transaction: copy to archive then delete from active.
+		# A deadline may interrupt COMMIT. WAL commits are NOT atomic across
+		# attached DBs: first commit the archive alone, then verify the durable
+		# copy under a fresh write lock before deleting anything from active.
+		# An interruption between commits leaves safe, retryable duplicates.
+		local verify_sql table_name columns row_filter
+		verify_sql="INSERT INTO archive_copy_guard SELECT NOT EXISTS (SELECT ${session_select_columns} FROM session WHERE id IN ($in_clause) EXCEPT SELECT ${session_insert_columns} FROM archive.session WHERE id IN ($in_clause));"
+		for table_name in message part todo session_share session_message session_input session_context_epoch event_sequence event; do
+			_sqlite_has_table "$ACTIVE_DB" "$table_name" || continue
+			columns=$(opencode_db_table_columns "$ACTIVE_DB" "$table_name") || return 1
+			row_filter="$session_row_filter"
+			case "$table_name" in event_sequence | event) row_filter="$aggregate_row_filter" ;; esac
+			verify_sql="${verify_sql}INSERT INTO archive_copy_guard SELECT NOT EXISTS (SELECT ${columns} FROM ${table_name} WHERE ${row_filter} EXCEPT SELECT ${columns} FROM archive.${table_name} WHERE ${row_filter});"
+		done
+
 		# ATTACH and DETACH are within the same sqlite3 invocation — the attachment
 		# is released automatically when the process exits. The trap above ensures
 		# the archive WAL is checkpointed on any exit path between batches.
 		# Foreign-key mode is connection-local. Enable it explicitly and still use
 		# dependency-safe manual deletes so behavior never depends on OpenCode's
 		# separate connection configuration.
-		sqlite3 "$ACTIVE_DB" <<BATCH_SQL
+		if ! sqlite3 "$ACTIVE_DB" <<BATCH_SQL
+.bail on
 PRAGMA foreign_keys = ON;
 ATTACH DATABASE '$ARCHIVE_DB' AS archive;
 
@@ -1313,6 +1409,11 @@ ${event_sequence_copy_sql}
 -- defeats archiving.
 ${event_copy_sql}
 
+COMMIT;
+BEGIN IMMEDIATE;
+CREATE TEMP TABLE archive_copy_guard (ok INTEGER CHECK (ok = 1));
+${verify_sql}
+
 -- Delete from active (child tables first since FK CASCADE is not enforced)
 DELETE FROM part WHERE session_id IN ($in_clause);
 DELETE FROM todo WHERE session_id IN ($in_clause);
@@ -1329,6 +1430,10 @@ COMMIT;
 
 DETACH DATABASE archive;
 BATCH_SQL
+		then
+			print_error "Archive batch failed or durable copy differs; active rows were not deleted. Retry requires matching archived values."
+			return 1
+		fi
 
 		archived_total=$((archived_total + batch_count))
 
