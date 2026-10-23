@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.61] - 2026-10-23
+
+### Changed
+
+- Documentation: refresh hyprwhspr.md backends, install and model unload/reload from upstream
+
+### Fixed
+
+- adopt Playwriter 0.9.0 through the guarded aidevops integration
+- fix Bash 3.2 nounset aborts in REST gh wrapper array expansions
+- new-task batch refuses canonical, honours no-auto-dispatch, reports allocated IDs
+- fix secret account list NameError
+
 ## [3.39.60] - 2026-10-23
 
 ### Added
