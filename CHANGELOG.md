@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.60] - 2026-10-23
+
+### Added
+
+- idle-gated archive of DBs held by idle OpenCode sessions
+
+### Changed
+
+- Maintenance: sync GitHub issue refs to TODO.md (#35505)
+- Maintenance: mark t18763 complete (pr:#35497 completed:2026-10-23) (#35502)
+
+### Fixed
+
+- bound archives and support new epoch schema (GH#35509) (#35512)
+- recover release lane ref-update races (GH#35507) (#35508)
+
 ## [3.39.59] - 2026-10-23
 
 ### Fixed
