@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.66] - 2026-10-24
+
+### Changed
+
+- Refactor: adopt shared reader contract in LinkedIn, Meta and Notion readers
+- Refactor: adopt shared reader contract in Reddit, Slack and YouTube readers
+- Documentation: document host-binary runner capability probes (GH#35576) (#35577)
+
+### Fixed
+
+- fix Higgsfield helper tests without Playwright
+- emit terminal dispatch lease on ready-handoff release (GH#35574) (#35575)
+- shorten sandbox per-exec TMPDIR for Unix socket paths (#35572)
+- recognize self-authored terminal blocker evidence (#35570)
+
 ## [3.39.65] - 2026-10-24
 
 ### Fixed
