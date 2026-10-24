@@ -938,6 +938,56 @@ _sandbox_spawn_watchdog_bg() {
 	return 0
 }
 
+# Maximum child TMPDIR length: Chrome's ProcessSingleton appends ~46 chars
+# (/.org.chromium.Chromium.XXXXXX/SingletonSocket) and macOS sun_path is 103.
+readonly SANDBOX_TMPDIR_MAX_LEN=53
+
+# Create a short, private (0700, owner-checked) per-exec TMPDIR for the child.
+# Prints the path on success; returns 1 when no short base is usable.
+_sandbox_make_short_tmpdir() {
+	local base candidate
+	local uid
+	uid="$(id -u)"
+	for base in "${XDG_RUNTIME_DIR:-}" "/tmp"; do
+		[[ -n "$base" && -d "$base" && -w "$base" ]] || continue
+		candidate="${base%/}/aidevops-sbx-${uid}"
+		mkdir -p "$candidate" 2>/dev/null || continue
+		chmod 700 "$candidate" 2>/dev/null || continue
+		[[ -O "$candidate" && ! -L "$candidate" ]] || continue
+		candidate="$(mktemp -d "${candidate}/x.XXXXXX" 2>/dev/null)" || continue
+		if ((${#candidate} <= SANDBOX_TMPDIR_MAX_LEN)); then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+		rm -rf "$candidate"
+	done
+	return 1
+}
+
+# Print the child TMPDIR: short dir when available, else the long exec dir.
+_sandbox_resolve_child_tmpdir() {
+	local exec_tmpdir="$1"
+	local short_dir
+	if short_dir="$(_sandbox_make_short_tmpdir)" && [[ -n "$short_dir" ]]; then
+		printf '%s\n' "$short_dir"
+		return 0
+	fi
+	log_sandbox "WARN" "No short TMPDIR available; using ${exec_tmpdir} (Unix sockets may exceed sun_path)" >&2
+	printf '%s\n' "$exec_tmpdir"
+	return 0
+}
+
+# Remove the short child TMPDIR (no-op when it is the long fallback dir).
+# Arguments: $1 - child tmpdir, $2 - exec tmpdir
+_sandbox_cleanup_short_tmpdir() {
+	local child_tmpdir="$1"
+	local exec_tmpdir="$2"
+	if [[ -n "$child_tmpdir" && "$child_tmpdir" != "$exec_tmpdir" ]]; then
+		rm -rf "$child_tmpdir"
+	fi
+	return 0
+}
+
 # Build the env -i argument list for sandboxed execution.
 # Appends to the caller's env_args array (visible via bash dynamic scoping).
 # Arguments:
@@ -1448,17 +1498,19 @@ sandbox_run() {
 	fi
 
 	# Create isolated temp directory
-	local exec_id
-	exec_id="$(date +%s)-$$"
-	local exec_tmpdir="${SANDBOX_TMP_BASE}/${exec_id}"
+	local exec_tmpdir child_tmpdir
+	exec_tmpdir="${SANDBOX_TMP_BASE}/$(date +%s)-$$"
 	mkdir -p "$exec_tmpdir"
+	# Short child TMPDIR so Unix socket paths fit sun_path (GH#35571).
+	child_tmpdir="$(_sandbox_resolve_child_tmpdir "$exec_tmpdir")"
 
 	local -a env_args=()
-	_sandbox_build_env_args "$exec_tmpdir" "$extra_passthrough" "$home_override"
+	_sandbox_build_env_args "$child_tmpdir" "$extra_passthrough" "$home_override"
 	local egress_policy_file="${exec_tmpdir}/egress-policy.json"
 	if ! _sandbox_prepare_worker_egress "$egress_mode" "$egress_policy_file" "$worker_id" "$egress_policy_profile"; then
 		log_execution "$audit_cmd_str" 126 0 "$timeout_secs" "$block_network" "$extra_passthrough" "unavailable" "none"
 		rm -rf "$exec_tmpdir"
+		_sandbox_cleanup_short_tmpdir "$child_tmpdir" "$exec_tmpdir"
 		return 126
 	fi
 
@@ -1477,6 +1529,7 @@ sandbox_run() {
 		"$egress_backend" "$egress_policy_file" "$worker_id" \
 		"${env_args[@]}" "--" "${cmd_args[@]}" || exit_code=$?
 	rm -f "$egress_policy_file"
+	_sandbox_cleanup_short_tmpdir "$child_tmpdir" "$exec_tmpdir"
 
 	local end_time duration
 	end_time="$(date +%s)"
