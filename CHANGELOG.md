@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.64] - 2026-10-24
+
+### Fixed
+
+- update filelock to patched 4.2.1 (GH#35553) (#35557)
+
 ## [3.39.63] - 2026-10-24
 
 ### Changed
