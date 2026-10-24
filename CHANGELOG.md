@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.65] - 2026-10-24
+
+### Fixed
+
+- reconcile reports quota-deferred GitHub release and retries deferred recoveries
+
 ## [3.39.64] - 2026-10-24
 
 ### Fixed
