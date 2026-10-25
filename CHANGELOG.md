@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.69] - 2026-10-25
+
+### Added
+
+- bound coordinator checkpoint cleanup, add keepalive, default pruning (GH#35594) (#35601)
+
+### Changed
+
+- Documentation: document Playwriter selected-tab handoff order and stale-bundle pin
+- Maintenance: sync GitHub issue refs to TODO.md (#35597)
+
+### Fixed
+
+- normalize PATH version in mcp-diagnose.sh to avoid false Playwriter mismatch (GH#35604) (#35606)
+- require a publication reserve before queued ownership and time precreate sub-stages (GH#35602) (#35607)
+
 ## [3.39.68] - 2026-10-25
 
 ### Added
