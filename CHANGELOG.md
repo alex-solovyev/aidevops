@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.67] - 2026-10-25
+
+### Fixed
+
+- fix pagespeed-helper.sh unbound account_name/command in all subcommands
+
 ## [3.39.66] - 2026-10-24
 
 ### Changed
