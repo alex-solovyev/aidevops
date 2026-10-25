@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.68] - 2026-10-25
+
+### Added
+
+- Adapt Impeccable, Taste Skill and Fontjoy design guidance without tracking
+
+### Changed
+
+- Refactor: extract change-plan value and term-usage helpers
+
+### Fixed
+
+- preserve shell env-var references in output scrubber (GH#35586) (#35588)
+
 ## [3.39.67] - 2026-10-25
 
 ### Fixed
