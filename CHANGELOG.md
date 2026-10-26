@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.75] - 2026-10-26
+
+### Fixed
+
+- release dispatch claims on pre-launch failure and treat provider cooldown as backoff
+- restore bounded terminal-blocker recovery progress (GH#35716) (#35718)
+- preserve released supervisor heartbeat liveness (GH#35710) (#35714)
+- exclude runtime state from pending risk (GH#35709) (#35713)
+- align dependency reducer operational hold classification (#35711)
+
 ## [3.39.74] - 2026-10-26
 
 ### Added
