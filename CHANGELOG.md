@@ -10,6 +10,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.74] - 2026-10-26
+
+### Added
+
+- route standard tier to GPT-6.1 Terra
+- add explicit legacy maintenance workflow
+
+### Changed
+
+- Maintenance: mark t18772 complete (pr:#35677 completed:2026-10-26) (#35679)
+
+### Fixed
+
+- refresh supervisor watchdog owner heartbeat (GH#35704) (#35705)
+- classify lifecycle evidence and ignore commit editor metadata
+- keep parallel dispatch owner heartbeat fresh (#35700)
+- verify manual CLI worker PR handoffs (GH#35699) (#35701)
+- keep supervised Pulse stages live without claiming progress (GH#35695) (#35696)
+- discover managed workers without prompt prose (#35693)
+- close never-ready blocked claims in checkpoint approval history (GH#35683) (#35690)
+- preserve explicit input_required/external_trigger_pending blocker when Files Scope absent (GH#35685) (#35687)
+- explain release approval precondition failures (#35681)
+
 ## [3.39.73] - 2026-10-26
 
 ### Added
