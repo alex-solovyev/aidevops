@@ -33,6 +33,7 @@ PULSE_CYCLE_STATE_SCHEMA="aidevops.pulse-cycle-state/v1"
 PULSE_CYCLE_STATE_ARRAY_TYPE="array"
 PULSE_CYCLE_STATE_BLOCKER_NONE="none"
 PULSE_CYCLE_STATE_OBJECT_TYPE="object"
+PULSE_CYCLE_STATE_RUNNING="running"
 _PULSE_CYCLE_STATE_INITIALIZED=0
 _PULSE_CYCLE_STATE_TERMINAL=0
 _PULSE_CYCLE_ID=""
@@ -189,7 +190,7 @@ _pulse_cycle_state_start() {
 	_PULSE_CYCLE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 	_PULSE_CYCLE_OWNER_EXECUTOR_PID="$owner_pid"
 	_PULSE_CYCLE_PHASE="admitted"
-	_PULSE_CYCLE_OUTCOME="running"
+	_PULSE_CYCLE_OUTCOME="$PULSE_CYCLE_STATE_RUNNING"
 	_PULSE_CYCLE_HEARTBEAT_AT="$now"
 	_PULSE_CYCLE_PRIOR_PROGRESS_LAST_AT="$prior_progress_last_at"
 	_PULSE_CYCLE_PRIOR_PROGRESS_KINDS_JSON="$prior_progress_kinds_json"
@@ -215,7 +216,7 @@ _pulse_cycle_state_transition() {
 	*) return 1 ;;
 	esac
 	_PULSE_CYCLE_PHASE="$phase"
-	_PULSE_CYCLE_OUTCOME="running"
+	_PULSE_CYCLE_OUTCOME="$PULSE_CYCLE_STATE_RUNNING"
 	_PULSE_CYCLE_HEARTBEAT_AT=$(_pulse_cycle_state_now)
 	return 0
 }
@@ -349,6 +350,35 @@ _pulse_cycle_state_publish() {
 	_pulse_cycle_state_transition "$phase" || return 1
 	write_pulse_health_file
 	return $?
+}
+
+# GH#35695: Only the supervising cycle owner may refresh stage liveness.
+# A heartbeat is not delivery progress and must not revive completed/newer cycles.
+_pulse_cycle_state_stage_heartbeat() {
+	local heartbeat="" tmp_health=""
+	[[ "${_PULSE_CYCLE_STATE_INITIALIZED:-0}" == "1" \
+		&& "${_PULSE_CYCLE_STATE_TERMINAL:-0}" != "1" \
+		&& "${_LOCK_OWNED:-false}" == "true" ]] || return 1
+	_pulse_cycle_state_executor_is_owner || return 1
+	[[ -f "${PULSE_HEALTH_FILE:-}" ]] || return 1
+	heartbeat=$(_pulse_cycle_state_now)
+	tmp_health=$(mktemp "${PULSE_HEALTH_FILE}.heartbeat-XXXXXX") || return 1
+	# Do not collect workers/ledger/backoff here: their helpers can block the
+	# deadline supervisor. Do not log to LOGFILE either: byte growth is a stall
+	# detector input. Preserve every field except the structured heartbeat.
+	if ! jq -e --arg schema "$PULSE_CYCLE_STATE_SCHEMA" \
+		--arg cycle_id "$_PULSE_CYCLE_ID" --arg running "$PULSE_CYCLE_STATE_RUNNING" \
+		--arg heartbeat "$heartbeat" '
+		select(.cycle_state.schema == $schema and .cycle_state.cycle_id == $cycle_id
+			and .cycle_state.outcome == $running and .cycle_state.phase != "completed")
+		| .cycle_state.heartbeat_at = $heartbeat
+	' "$PULSE_HEALTH_FILE" >"$tmp_health" 2>/dev/null \
+		|| ! mv "$tmp_health" "$PULSE_HEALTH_FILE"; then
+		rm -f "$tmp_health"
+		return 1
+	fi
+	_PULSE_CYCLE_HEARTBEAT_AT="$heartbeat"
+	return 0
 }
 
 _pulse_cycle_state_health_is_current() {
