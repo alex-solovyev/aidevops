@@ -21,6 +21,7 @@ import time
 
 import worktree_lifetime_archive as archive
 import worktree_lifetime_launch as launch_contract
+import worktree_lifetime_reconcile as process_reconciliation
 
 
 def registry_path():
@@ -75,6 +76,7 @@ def records(limit, selected_paths=None):
                                  last_reconcile_at=last_attempt,
                                  reconcile_error=operation.get("reconcile_error"),
                                  lifecycle=launch_contract.summary(record))
+                    entry.update(process_reconciliation.observations(record, entry["source"]))
                 except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as error:
                     entry.update(state="unknown", error=type(error).__name__)
                 result["entries"].append(entry)
@@ -167,6 +169,7 @@ def reconcile(limit, maximum):
     except (OSError, ValueError, sqlite3.Error) as error:
         result.update(registry="unavailable", error=type(error).__name__)
         return result
+    result["processes"] = process_reconciliation.reconcile_entries(observed)
     candidates = [entry for entry in observed["entries"]
                   if entry.get("phase") == "verified" and entry.get("source") == "absent"]
     managed = archive.managed_module()
@@ -195,16 +198,24 @@ def reconcile(limit, maximum):
     return result
 
 
+def reconcile_processes(limit):
+    paths = reserve_scan(limit)
+    return process_reconciliation.reconcile_entries(records(limit, selected_paths=paths))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("report", "reconcile"))
+    parser.add_argument("operation", choices=("report", "reconcile", "reconcile-processes"))
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--max-attempts", type=int, default=5)
     parser.add_argument("--summary", action="store_true")
     arguments = parser.parse_args()
     if not 1 <= arguments.limit <= 1000 or not 1 <= arguments.max_attempts <= 20:
         parser.error("limit must be 1..1000 and max-attempts 1..20")
-    value = report(arguments.limit) if arguments.operation == "report" else reconcile(arguments.limit, arguments.max_attempts)
+    if arguments.operation == "reconcile-processes":
+        value = reconcile_processes(arguments.limit)
+    else:
+        value = report(arguments.limit) if arguments.operation == "report" else reconcile(arguments.limit, arguments.max_attempts)
     if arguments.summary and arguments.operation == "report":
         entries = value["registry"].pop("entries")
         value["registry"]["sampled_states"] = dict(Counter(entry.get("state", "unknown") for entry in entries))
