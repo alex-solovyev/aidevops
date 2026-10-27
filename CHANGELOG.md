@@ -10,6 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.77] - 2026-10-27
+
+### Added
+
+- guarded resumable bucket migration in object-storage-helper (GH#35725) (#35728)
+
+### Changed
+
+- Maintenance: mark t18774 complete (pr:#35736 completed:2026-10-27) (#35729)
+- Maintenance: t18773 → done; add t18774 (GH#35730)
+
+### Fixed
+
+- release unknown terminal-blocker holds on trusted retry or brief revision
+- reconcile recorded owner process generations
+- guard publication prerequisites and accept pinned managed signers (#35742)
+- don't block cloudron release approval on in-progress catalog run (#35735)
+- tolerate deleted cwd in git shim guard and bash32 gate test (#35736)
+- skip signer-pinned repair verification when release already published (GH#35732) (#35734)
+
 ## [3.39.76] - 2026-10-27
 
 ### Changed
