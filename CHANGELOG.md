@@ -10,6 +10,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.78] - 2026-10-27
+
+### Added
+
+- playwright-runtime install --with-axe
+- add explicit worker archive plans
+
+### Changed
+
+- Maintenance: bump the actions group with 2 updates (#35770)
+
+### Fixed
+
+- detach routines outside supervisor-pulse cgroup, launch once
+- comment-aware, normalized TODO duplicate gates
+- align React and React DOM at 19.3.1 for GH#35767 (#35773)
+- pin patched litellm 1.100.4 (GH#35771) (#35774)
+- update litellm to 1.100.4 (#35775)
+- skip credential-less config-only providers in subagent model routing
+- observe Pulse worker activity from one process census
+- expose sanitized release GitHub read diagnostics (#35756)
+- omit disposable permission requests from archives
+
 ## [3.39.77] - 2026-10-27
 
 ### Added
