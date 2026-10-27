@@ -9,15 +9,14 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import sqlite3
 import subprocess
 import sys
 import time
-from contextlib import closing
 
-import worktree_lifetime_owner as owner
 import worktree_maintenance_boundary as boundary
+import worktree_maintenance_worker as worker
+from worktree_maintenance_commands import command, executable, git, repository
 
 SCHEMA = "aidevops.worktree-maintenance/v2"
 SCRIPTS = Path(__file__).resolve().parent
@@ -26,26 +25,6 @@ require = boundary.require
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-def executable(name):
-    require(name in {"git", "gh", "bash"}, "maintenance:unsupported-command")
-    path = shutil.which(name)
-    require(path is not None, "maintenance:command-unavailable:" + name)
-    return os.path.abspath(path)
-
-
-def command(arguments):
-    argv = [executable(arguments[0]), *arguments[1:]]
-    # Internal argv builders only; data stays in separate arguments, never shell text.
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=30,  # nosec B603
-                            env=dict(os.environ, GIT_OPTIONAL_LOCKS="0"))
-    require(result.returncode == 0, "maintenance:command-failed:" + arguments[0])
-    return result.stdout.strip()
-
-
-def git(path, *arguments):
-    return command(["git", "-C", str(path), *arguments])
 
 
 def machine():
@@ -62,59 +41,20 @@ def database():
     return path.resolve().as_uri() + "?mode=ro"
 
 
-def legacy_observation(item):
-    if not isinstance(item, dict):
-        return False
-    if (item.get("kind"), item.get("evidence")) != (owner.KIND, "observed"):
-        return False
-    return not any(item.get(field) for field in ("completion_evidence", "unit", "invocation", "quiescence"))
+owner = worker.owner
+legacy_observation = worker.legacy_observation
 
 
 def legacy(path):
-    with closing(sqlite3.connect(database(), uri=True, timeout=3)) as connection:
-        row = connection.execute("SELECT record FROM worktree_managed_lifetimes WHERE path = ?",
-                                 (str(path),)).fetchone()
-        require(row is not None, "maintenance:not-enrolled")
-        record = json.loads(row[0])
-        claim = connection.execute("SELECT owner_pid FROM worktree_owners WHERE worktree_path = ?",
-                                   (str(path),)).fetchone()
-    require(record.get("manager") == owner.MANAGER and record.get("state") == "running",
-            "maintenance:not-legacy-running")
-    launches = record.get("launches")
-    require(isinstance(launches, list) and launches and all(legacy_observation(item) for item in launches),
-        "maintenance:not-legacy-admission")
-    require(not record.get("archive_operation"), "maintenance:existing-archive-operation")
-    require(record.get("identity") == owner.identity(path), "maintenance:identity-changed")
-    if claim:
-        require(type(claim[0]) is int and claim[0] > 0, "maintenance:invalid-owner")
-        try:
-            os.kill(claim[0], 0)
-        except ProcessLookupError:
-            pass
-        else:
-            raise ValueError("maintenance:live-owner")
-    return record
+    return worker.legacy(database(), path)
 
 
-def repository(path):
-    remote = git(path, "remote", "get-url", "origin")
-    match = re.fullmatch(r"(?:https://github[.]com/|git@github[.]com:)([\w.-]+/[\w.-]+?)(?:[.]git)?", remote)
-    require(match is not None, "maintenance:unsupported-remote")
-    slug = match[1]
-    metadata = json.loads(command(["gh", "api", "repos/" + slug]))
-    default = metadata["default_branch"]
-    tip = json.loads(command(["gh", "api", f"repos/{slug}/git/ref/heads/{default}"]))["object"]["sha"]
-    require(git(path, "rev-parse", "refs/remotes/origin/" + default) == tip,
-            "maintenance:refresh-default-ref-before-planning")
-    return {"path": str(path), "slug": slug, "default": default, "tip": tip}
-
-
-def preservation_checks(path):
+def preservation_checks(path, discard_ignored=False):
     for marker in (".aidevops-preserve-forensics", ".preserve-forensics", ".aidevops-security-incident"):
         require(not os.path.lexists(path / marker), "maintenance:preserve-forensics")
     # The current producer captures Git/untracked data, not ignored content.
-    # Do not silently discard ignored secrets or recovery data in this new path.
-    require(not git(path, "ls-files", "--others", "--ignored", "--exclude-standard", "-z"),
+    # Only an explicit worker-plan decision can discard ignored content.
+    require(discard_ignored or not git(path, "ls-files", "--others", "--ignored", "--exclude-standard", "-z"),
             "maintenance:ignored-content-requires-preservation")
 
 
@@ -144,6 +84,50 @@ def candidate(path, repo):
         raise ValueError("maintenance:retention-policy-not-clear") from error
     return {"path": str(path), "head": git(path, "rev-parse", "HEAD"), "branch": branch,
             "record_digest": digest(record), "identity": record["identity"]}
+
+
+def worker_candidate(path, repo, selection):
+    require(path.is_absolute() and str(path) == os.path.realpath(path) and not path.is_symlink(),
+            "maintenance:noncanonical-path")
+    boundary.observe()
+    witness = worker.evidence(path, selection)
+    snapshot = worker.require_unused(path)
+    binding = worker.legacy_binding(database(), path, snapshot)
+    identity = binding["identity"]
+    preservation_checks(path, selection["discard_ignored"])
+    require(identity["common"] == git(repo["path"], "rev-parse", "--path-format=absolute", "--git-common-dir"),
+            "maintenance:repository-mismatch")
+    require(not git(path, "status", "--porcelain", "--untracked-files=all"), "maintenance:dirty-worktree")
+    ahead = int(git(path, "rev-list", "--count", "HEAD", "--not", repo["tip"]))
+    require(ahead == 0 or selection["archive_local_commits"], "maintenance:local-commits-require-archive-policy")
+    branch = git(path, "symbolic-ref", "--short", "HEAD")
+    policy_args = ["bash", str(SCRIPTS / "worktree-maintenance-policy.sh"), str(path), branch, repo["slug"]]
+    if selection["archive_blocked"]:
+        policy_args.append("--archive-blocked")
+    command(policy_args)
+    return {"path": str(path), "head": git(path, "rev-parse", "HEAD"), "branch": branch,
+            "identity": identity, "lifecycle_record_sha256": binding["lifecycle_record_sha256"],
+            "local_commits": ahead, "worker_evidence": witness}
+
+
+def worker_plan(repo_path, path, selection):
+    repo = repository(repo_path.resolve(strict=True))
+    entry = worker_candidate(path, repo, selection)
+    return {"schema": SCHEMA, "machine": machine(), "uid": os.getuid(), "created_at": time.time(),
+            "repository": repo, "worker_policy": selection,
+            "entries": [dict(entry, decision="candidate")]}
+
+
+def create_plan(args):
+    options = (args.worker_path, args.worker_launch_log, args.worker_runtime_log)
+    policies = (args.discard_ignored, args.archive_local_commits, args.archive_blocked)
+    if any(options + policies):
+        require(all(options), "maintenance:worker-path-and-both-native-logs-required")
+        selection = {"policy": worker.POLICY, "launch_log": str(args.worker_launch_log),
+                      "runtime_log": str(args.worker_runtime_log), "discard_ignored": args.discard_ignored,
+                      "archive_local_commits": args.archive_local_commits, "archive_blocked": args.archive_blocked}
+        return worker_plan(args.repo, args.worker_path, selection)
+    return plan(args.repo, args.limit, args.offset)
 
 
 def plan(repo_path, limit=50, offset=0):
@@ -201,7 +185,12 @@ def proof(path, plan_path, confirmation):
     expected = next((entry for entry in value["entries"] if entry["path"] == str(path)
                      and entry["decision"] == "candidate"), None)
     require(expected is not None, "maintenance:path-not-approved")
-    observed = candidate(path, value["repository"])
+    selection = value.get("worker_policy")
+    if selection is not None:
+        worker.validate_selection(selection)
+        observed = worker_candidate(path, value["repository"], selection)
+    else:
+        observed = candidate(path, value["repository"])
     require(observed == {key: item for key, item in expected.items() if key != "decision"},
             "maintenance:candidate-changed")
     require(boundary.observe() == context, "maintenance:boundary-changed")
@@ -215,6 +204,7 @@ def apply(plan_path, confirmation):
             "maintenance:repository-changed")
     env = dict(os.environ, AIDEVOPS_WORKTREE_MAINTENANCE_PLAN=str(plan_path),
                AIDEVOPS_WORKTREE_MAINTENANCE_CONFIRM=confirmation,
+               AIDEVOPS_WORKTREE_MAINTENANCE_KEEP_BRANCH="1" if value.get("worker_policy") is not None else "0",
                AIDEVOPS_WORKTREE_MANAGER="legacy-guards", PYTHONDONTWRITEBYTECODE="1")
     for entry in value["entries"]:
         if entry["decision"] != "candidate":
@@ -223,7 +213,8 @@ def apply(plan_path, confirmation):
         context = proof(path, plan_path, confirmation)
         # No --force: dirty changes and locks acquired after planning still veto.
         # Existing archive-first removal independently verifies restoration of its
-        # Git capture. Candidates with ignored files are refused, not discarded.
+        # Git capture. Ignored content is refused unless the selected worker
+        # policy explicitly classifies it as disposable; forensic vetoes remain.
         # This module never removes files or changes receipts.
         # Fixed repository helper and operation; the approved path is a positional argument.
         result = subprocess.run(  # nosec B603
@@ -242,6 +233,12 @@ def main():
     create.add_argument("--repo", type=Path, required=True)
     create.add_argument("--limit", type=int, default=50)
     create.add_argument("--offset", type=int, default=0)
+    create.add_argument("--worker-path", type=Path)
+    create.add_argument("--worker-launch-log", type=Path)
+    create.add_argument("--worker-runtime-log", type=Path)
+    create.add_argument("--discard-ignored", action="store_true")
+    create.add_argument("--archive-local-commits", action="store_true")
+    create.add_argument("--archive-blocked", action="store_true")
     for action in ("check", "apply", "proof"):
         check = commands.add_parser(action)
         check.add_argument("--plan", type=Path, required=True)
@@ -251,7 +248,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.operation == "plan":
-            value = plan(args.repo, args.limit, args.offset)
+            value = create_plan(args)
             print(json.dumps(value, indent=2))
             print("Confirmation token: " + digest(value), file=sys.stderr)
         elif args.operation == "apply":
