@@ -16,6 +16,7 @@
 # Functions in this module (in source order):
 #   - _routine_last_run_epoch
 #   - _routine_update_state
+#   - _routine_launch_detached (systemd-run --scope escape from pulse cgroup)
 #   - _routine_execute
 #   - _routine_extract_section
 #   - _routine_parse_line
@@ -42,6 +43,10 @@ if ! declare -F _gh_secondary_cooldown_expires_at >/dev/null 2>&1; then
 	# shellcheck source=./shared-gh-secondary-cooldown.sh
 	source "${BASH_SOURCE[0]%/*}/shared-gh-secondary-cooldown.sh" || true
 fi
+# Shared transient-scope launcher (GH#35760). Non-fatal: without it, routines
+# keep the session-detach launcher.
+# shellcheck source=./systemd-scope-launch.sh
+source "${BASH_SOURCE[0]%/*}/systemd-scope-launch.sh" || true
 _PULSE_ROUTINES_LOADED=1
 _ROUTINE_STATUS_SUCCESS="success"
 _ROUTINE_STATUS_FAILURE="failure"
@@ -402,33 +407,59 @@ _routine_finalize_terminal() {
 	return 0
 }
 
+#######################################
+# Launch a detached routine runner outside the pulse unit cgroup (GH#33993 class).
+# setsid/nohup alone stay in aidevops-supervisor-pulse.service's cgroup, so
+# KillMode=control-group SIGTERMs long routines when a short event-refill wake ends.
+# The backend is chosen BEFORE launching and the runner is launched exactly once:
+# a fast routine exits before cgroup membership can be confirmed, so treating
+# that as a failed launch would rerun it. A launch that really failed is
+# recovered by the dispatched-state and runner-lock retry path.
+# Args: $1=routine_id $2=runner_log $3=kind (script|agent) $4..=runner argv
+#######################################
+_routine_launch_detached() {
+	local routine_id="$1"
+	local runner_log="$2"
+	local kind="$3"
+	shift 3
+	local runner_pid="" scope_name="" launch_result=""
+	local monitor_was_enabled=false
+
+	if declare -F systemd_scope_available >/dev/null 2>&1 && systemd_scope_available; then
+		scope_name="aidevops-routine-$(printf '%s' "$routine_id" | tr -c 'A-Za-z0-9_.-' '-')-$$-${RANDOM:-0}"
+		launch_result=$(systemd_scope_launch "$scope_name" "aidevops routine ${routine_id}" "$runner_log" "$@")
+		echo "[pulse-wrapper] routine ${routine_id}: detached ${kind} runner pid ${launch_result%% *} isolation=${launch_result#* } unit=${scope_name}.scope" >>"$LOGFILE"
+		return 0
+	fi
+
+	if command -v setsid >/dev/null 2>&1; then
+		setsid nohup "$@" </dev/null >>"$runner_log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
+	elif command -v perl >/dev/null 2>&1; then
+		perl -MPOSIX -e 'POSIX::setsid() >= 0 or exit 126; exec @ARGV or exit 127' nohup "$@" \
+			</dev/null >>"$runner_log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
+	else
+		# Job control gives the child its own process group even without setsid.
+		[[ "$-" != *m* ]] || monitor_was_enabled=true
+		set -m
+		nohup "$@" </dev/null >>"$runner_log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
+		[[ "$monitor_was_enabled" == true ]] || set +m
+	fi
+	runner_pid=$!
+	disown "$runner_pid" 2>/dev/null || true
+	echo "[pulse-wrapper] routine ${routine_id}: detached ${kind} runner pid ${runner_pid} isolation=session" >>"$LOGFILE"
+	return 0
+}
+
 _routine_dispatch_agent() {
 	local routine_id="$1"
 	local module_path="${BASH_SOURCE[0]}"
 	local runner_log="${LOGFILE}.routine-${routine_id}.log"
 	mkdir -p "$(dirname "$ROUTINE_STATE_FILE")" || return 1
 	export LOGFILE ROUTINE_STATE_FILE ROUTINE_LOG_HELPER HEADLESS_RUNTIME_HELPER
-	if command -v setsid >/dev/null 2>&1; then
-		# shellcheck disable=SC2016 # Expand positional arguments in the child.
-		setsid nohup bash -c 'source "$1" && shift && _routine_run_detached_agent "$@"' \
-			_ "$module_path" "$@" </dev/null >>"$runner_log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
-	elif command -v perl >/dev/null 2>&1; then
-		perl -MPOSIX -e 'POSIX::setsid() >= 0 or exit 126; exec @ARGV or exit 127' nohup bash -c \
-			'source "$1" && shift && _routine_run_detached_agent "$@"' \
-			_ "$module_path" "$@" </dev/null >>"$runner_log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
-	else
-		# Job control gives the child its own process group even without setsid.
-		local monitor_was_enabled=false
-		[[ "$-" != *m* ]] || monitor_was_enabled=true
-		set -m
-		# shellcheck disable=SC2016 # Expand positional arguments in the child.
-		nohup bash -c 'source "$1" && shift && _routine_run_detached_agent "$@"' \
-			_ "$module_path" "$@" </dev/null >>"$runner_log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
-		[[ "$monitor_was_enabled" == true ]] || set +m
-	fi
-	local runner_pid=$!
-	disown "$runner_pid" 2>/dev/null || true
-	echo "[pulse-wrapper] routine ${routine_id}: detached agent runner pid ${runner_pid}" >>"$LOGFILE"
+	# shellcheck disable=SC2016 # Expand positional arguments in the child.
+	_routine_launch_detached "$routine_id" "$runner_log" "agent" \
+		bash -c 'source "$1" && shift && _routine_run_detached_agent "$@"' \
+		_ "$module_path" "$@"
 	return 0
 }
 
@@ -645,25 +676,10 @@ _routine_dispatch_script() {
 	local runner_log="${LOGFILE}.routine-${routine_id}.log"
 
 	export LOGFILE ROUTINE_STATE_FILE ROUTINE_LOG_HELPER
-	if command -v setsid >/dev/null 2>&1; then
-		# shellcheck disable=SC2016 # The child shell must expand its own positional arguments.
-		setsid nohup bash -c 'source "$1" && shift && _routine_run_detached_script "$@"' \
-			_ "$module_path" "$routine_id" "$script_path" "$repo_path" "$started_epoch" "$@" \
-			</dev/null >>"$runner_log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
-	elif command -v perl >/dev/null 2>&1; then
-		perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or exit 127' nohup bash -c \
-			'source "$1" && shift && _routine_run_detached_script "$@"' \
-			_ "$module_path" "$routine_id" "$script_path" "$repo_path" "$started_epoch" "$@" \
-			</dev/null >>"$runner_log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
-	else
-		# shellcheck disable=SC2016 # The child shell must expand its own positional arguments.
-		nohup bash -c 'source "$1" && shift && _routine_run_detached_script "$@"' \
-			_ "$module_path" "$routine_id" "$script_path" "$repo_path" "$started_epoch" "$@" \
-			</dev/null >>"$runner_log" 2>&1 &
-	fi
-	local runner_pid=$!
-	disown "$runner_pid" 2>/dev/null || true
-	echo "[pulse-wrapper] routine ${routine_id}: detached script runner pid ${runner_pid}" >>"$LOGFILE"
+	# shellcheck disable=SC2016 # The child shell must expand its own positional arguments.
+	_routine_launch_detached "$routine_id" "$runner_log" "script" \
+		bash -c 'source "$1" && shift && _routine_run_detached_script "$@"' \
+		_ "$module_path" "$routine_id" "$script_path" "$repo_path" "$started_epoch" "$@"
 	return 0
 }
 

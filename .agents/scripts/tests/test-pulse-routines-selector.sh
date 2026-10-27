@@ -573,6 +573,8 @@ LIFECYCLE
             command() {
                 if [[ "${1:-}" == -v ]]; then
                     case "$ROUTINE_TEST_MODE:${2:-}" in
+                    # Legacy PGID modes must not take the systemd-run path.
+                    setsid:systemd-run|perl:systemd-run|job-control:systemd-run) return 1 ;;
                     perl:setsid|job-control:setsid|job-control:perl) return 1 ;;
                     esac
                 fi
@@ -775,6 +777,100 @@ _test_platform_scheduler_ownership() {
 	return 0
 }
 
+# Detached routine runners must leave the pulse unit cgroup via systemd-run
+# --scope (same class as GH#33993 workers). setsid alone is not enough when
+# aidevops-supervisor-pulse.service uses KillMode=control-group.
+# The backend is chosen before launch: a fast-exiting runner must run exactly
+# once (GH#35761 review), and a failed probe must use session detach once.
+# Args: $1=tmpdir $2=probe (ok|fail)
+_test_detached_systemd_scope() {
+	local tmpdir="$1"
+	local probe="$2"
+	local root="${tmpdir}/systemd-scope-${probe}"
+	mkdir -p "$root/bin"
+	if (
+		local attempt=0
+		export ROUTINE_TEST_ROOT="$root" ROUTINE_TEST_PROBE="$probe"
+		export HEADLESS_RUNTIME_HELPER="$root/headless.sh"
+		export ROUTINE_LOG_HELPER="$root/lifecycle.sh"
+		export LOGFILE="$root/pulse.log"
+		export ROUTINE_STATE_FILE="$root/state.json"
+		export PATH="$root/bin:$PATH"
+		cat >"$root/bin/systemd-run" <<'RUN'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${ROUTINE_TEST_ROOT}/systemd-run-args"
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+	--user | --scope | --collect | --quiet)
+		shift
+		;;
+	--unit | --description)
+		shift 2
+		;;
+	--unit=* | --description=*)
+		shift
+		;;
+	*)
+		break
+		;;
+	esac
+done
+exec "$@"
+RUN
+		chmod +x "$root/bin/systemd-run"
+		# Fast exit: the runner finishes before cgroup membership is confirmed.
+		cat >"$HEADLESS_RUNTIME_HELPER" <<'AGENT'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$ROUTINE_TEST_ROOT/invocations"
+exit 0
+AGENT
+		cat >"$ROUTINE_LOG_HELPER" <<'LIFECYCLE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$ROUTINE_TEST_ROOT/lifecycle"
+LIFECYCLE
+		chmod +x "$HEADLESS_RUNTIME_HELPER" "$ROUTINE_LOG_HELPER"
+		bash -c '
+			source "$1"
+			# The user-manager probe is host-specific; pin its outcome.
+			if [[ "$ROUTINE_TEST_PROBE" == ok ]]; then
+				systemd_scope_available() { return 0; }
+			else
+				systemd_scope_available() { return 1; }
+			fi
+			_routine_dispatch_agent r-scope "Scope agent" Build+ "$ROUTINE_TEST_ROOT"
+		' _ "$PULSE_ROUTINES" || exit 1
+		# Dispatch has returned, so every launch has already happened; wait for
+		# the single runner to finish and release its lock.
+		while [[ "$attempt" -lt 100 ]]; do
+			if [[ -s "$root/invocations" && ! -d "${ROUTINE_STATE_FILE}.r-scope.runner" ]] &&
+				jq -e '."r-scope".last_status == "success"' "$ROUTINE_STATE_FILE" >/dev/null 2>&1; then
+				break
+			fi
+			sleep 0.1
+			attempt=$((attempt + 1))
+		done
+		[[ "$attempt" -lt 100 ]] || exit 1
+		sleep 0.5
+		[[ "$(wc -l <"$root/invocations" | tr -d '[:space:]')" == 1 ]] || exit 1
+		if [[ "$probe" == ok ]]; then
+			[[ "$(wc -l <"$root/systemd-run-args" | tr -d '[:space:]')" == 1 ]] || exit 1
+			grep -Eq -- '--scope' "$root/systemd-run-args" || exit 1
+			grep -Eq -- '--user' "$root/systemd-run-args" || exit 1
+			grep -Eq -- 'isolation=systemd_scope(_unconfirmed)? unit=aidevops-routine-r-scope-' "$root/pulse.log" || exit 1
+		else
+			[[ ! -e "$root/systemd-run-args" ]] || exit 1
+			grep -Eq -- 'isolation=session' "$root/pulse.log" || exit 1
+		fi
+		! grep -Eq -- 'falling back' "$root/pulse.log" || exit 1
+	); then
+		pass "GH#35760: routine detach probe=${probe} launches exactly once (scope when available)"
+	else
+		fail "GH#35760: routine detach probe=${probe}" "see $root"
+	fi
+	return 0
+}
+
 main() {
 	local tmpdir
 	tmpdir=$(mktemp -d) || {
@@ -800,6 +896,8 @@ main() {
 	done
 	_test_stale_agent_recovery "$tmpdir"
 	_test_sigterm_agent_runner "$tmpdir"
+	_test_detached_systemd_scope "$tmpdir" ok
+	_test_detached_systemd_scope "$tmpdir" fail
 
 	# === Summary ===
 	printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
