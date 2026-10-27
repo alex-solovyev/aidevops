@@ -8,6 +8,9 @@
 import { existsSync, readFileSync } from "fs";
 import { floorReasoning, reasoningFloor, normalizeInteractiveDefault, normalizeSpecialistAdvisor } from "./model-routing-variant.mjs";
 import { activeLocalOnlyPolicy, isLocalProvider } from "./local-only-policy.mjs";
+import { providerHasUsableCredentials } from "./provider-credentials.mjs";
+
+export { providerHasUsableCredentials };
 
 export const DEFAULT_ESCALATION_ORDER = ["simple", "standard", "thinking"];
 
@@ -126,7 +129,8 @@ export function selectConnectedRoutingCandidate(routing, tier, providerState, po
     const { providerID, modelID } = routingModelIdentity(candidate);
     if (policy?.bound && !isLocalProvider(policy, providerID)) continue;
     const provider = providers.get(providerID);
-    if (!provider || !connected.has(providerID)) continue;
+    // Connected is not authenticated: skip credential-less config providers (GH#35762).
+    if (!provider || !connected.has(providerID) || !providerHasUsableCredentials(provider)) continue;
     const models = provider.models && typeof provider.models === "object" ? provider.models : {};
     const registered = Object.entries(models).some(
       ([key, value]) => key === modelID || value?.id === modelID,
