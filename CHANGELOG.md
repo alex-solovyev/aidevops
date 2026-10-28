@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.79] - 2026-10-28
+
+### Changed
+
+- Maintenance: promote OpenCode v2 pin to 2.2.0
+
+### Fixed
+
+- restore automatic review label eligibility (GH#35782) (#35791)
+- show local retry time for core rate-limit exhaustion
+- fix isolated OpenCode canary plugin loading
+- resolve release commit from tag for GH#35786 (#35787)
+
 ## [3.39.78] - 2026-10-27
 
 ### Added
