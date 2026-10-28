@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.80] - 2026-10-28
+
+### Fixed
+
+- auto-merge scoped canary worker briefs; track default-branch JS lockfiles
+- link v3.39.79 release heading
+
 ## [3.39.79] - 2026-10-28
 
 ### Changed
