@@ -1,10 +1,10 @@
 # Explicit lifecycle registry
 
-This slice is opt-in, observe-only lifecycle tracking, not the production worker launcher or a
-replacement cleanup controller. It never modifies the legacy registry, claims
+This registry provides observe-only lifecycle tracking, not a replacement cleanup
+controller. It never modifies the legacy registry, claims
 worktrees, signals workers or authorizes deletion. `cleanup_authorized` is always
-false. There is no scheduler or hidden default database. A disabled-by-default
-pre-exec experiment is available for ordinary OpenCode worker launches.
+false. Ordinary OpenCode worker launches collect metadata automatically in a local
+private database; there is no additional scheduler or change to cleanup authority.
 
 ## Commands
 
@@ -65,7 +65,7 @@ an additional session protocol: process survival alone cannot settle it.
 - Observations occur outside writer transactions. A conditional version update
   rejects samples made stale by another state change. Terminal runs cannot revive.
 - Each bounded pass checks readiness before processing rows, samples each distinct
-  process identity once, and rotates unfinished runs by last recorded event sequence.
+  process identity once, and rotates unfinished runs by a scheduling cursor.
 - Events have a UTC `recorded_at` timestamp generated at insertion, not a claim
   about when the producer performed the action. Sequence orders events; wall-clock
   changes are never used as evidence of process death.
@@ -75,9 +75,9 @@ an additional session protocol: process survival alone cannot settle it.
   observation cannot partially change a run. Status reports capacity and last event.
   This bounds logical journal growth, not a byte-exact disk quota or filesystem WAL
   behavior under a stalled reader. SQLite disk errors remain explicit failures.
-- Failed passes are reported, not silently retried forever. A full journal pauses
-  registry ingestion/reconciliation only, not the old worker system. Scheduling,
-  backoff and an evidence-preserving retention policy remain deployment prerequisites.
+- Failed passes are reported. A full journal prevents new events, but unchanged
+  observations can still refresh scheduling metadata. Worker execution continues;
+  an evidence-preserving retention policy is needed for indefinite operation.
 
 `LifecycleRegistry` stores state in `registry.sqlite3` with schema 1 and mode
 `observe-only`. Other schemas are rejected without mutation; only disposable test
@@ -98,13 +98,13 @@ or disk-full simulations. The latest native evidence is linked in
 [COMPATIBILITY.md](COMPATIBILITY.md). Each report applies only to its recorded
 artifact and environment.
 
-Before automatic collection: implement durable launch-boundary event delivery,
+Before treating collection as complete lifecycle evidence: implement durable launch-boundary event delivery,
 session completion semantics, physical generation capture, host/context binding,
 retention and bounded scheduling. Active authority additionally needs
 the no-writers contract, migration and rollback from DESIGN.md. Do not enable
 cleanup based on this observe-only lifecycle tracking slice.
 
-## Minimal pre-exec experiment
+## Automatic pre-exec observation
 
 `worker-launch.py --state-dir STATE --worktree WORKTREE -- NATIVE_COMMAND ...`
 records its own process identity and a hypothetical binding, then uses `exec` to
@@ -114,9 +114,26 @@ This records an attempted launch, not proof that exec or the AI task succeeded.
 If the native command spawns a separate runtime rather than execing it, that child
 is NOT tracked. No cleanup decision may use the wrapper's completion.
 
-The worker launch path in `headless-runtime-invoke.sh` enables this only when
-`AIDEVOPS_LIFECYCLE_STATE_DIR` explicitly names an initialized private store.
-Without the variable the original command is unchanged. The bare hook comes after
+The OpenCode worker launch path in `headless-runtime-invoke.sh` enables observation
+by default on supported Linux/macOS installations, independent of systemd or launchd.
+The default private state is `~/.aidevops/.agent-workspace/worker-lifecycle`;
+when `AIDEVOPS_WORKSPACE_DIR` is set, its `worker-lifecycle` subdirectory is used.
+`AIDEVOPS_LIFECYCLE_STATE_DIR` optionally overrides the path, not activation.
+The launchers and Pulse expand a literal leading `~/` in either setting using
+the current user's home directory; no shell expression evaluation is performed.
+Agent installation prepares the framework workspace before bundle activation and
+exports its canonical path to subsequent setup steps. It does not create the
+private registry. An explicit custom state path still requires an existing,
+canonical parent. Each machine uses its own local state: do not share or copy
+this database between hosts.
+With lifecycle observation explicitly disabled, workspace preparation failures
+produce a warning without blocking bundle activation.
+Both hooks pass `--initialize`: after platform readiness, the first launch creates
+the private store. Concurrent initializers briefly wait for the winning initializer's
+commit. Existing state is validated, never replaced, migrated or repaired; interrupted
+initialization produces an observation gap and requires explicit investigation.
+Direct CLI calls without `--initialize` still require an initialized store.
+The bare hook comes after
 the existing sandbox-required guard. For sandbox execution, the launcher supplies
 a worktree hint via `AIDEVOPS_LIFECYCLE_WORKTREE` to `sandbox-exec-helper.sh`;
 it is not added to the child's env
@@ -126,6 +143,10 @@ workloads are excluded. Never disable sandbox policy to exercise observation.
 No producer queue is enabled or shipped; durable delivery is a later boundary.
 
 Both hooks require the worker role and start the observer with `python3 -E -s -B`.
+They resolve the Python executable and check launcher bootstrap with `--help`
+before wrapping the command. An unavailable entry or incompatible interpreter leaves
+the original command intact and reports an observation gap. The same resolved
+executable is used after sandbox environment clearing.
 Python-specific environment variables and user-site customization cannot alter
 observer startup; these flags do not remove variables from the native command's
 environment. The installed interpreter and system packages remain trusted.
@@ -137,8 +158,36 @@ native command. The launcher uses `register_attempt` to commit registration and
 its initial binding together. A binding error, capacity failure or crash before
 commit leaves neither event nor projection from that attempt. Database lock waits
 are bounded (2 seconds per connection), but startup
-latency is not zero. No scheduler or persistent global environment is installed.
-Remove the opt-in variable to disable this experiment; preserve the store.
+latency is not zero. Initialization retries have a 2-second deadline checked between
+attempts; an in-flight SQLite wait can extend that deadline. No scheduler or persistent
+global environment is installed. Set `AIDEVOPS_LIFECYCLE_DISABLED=1` to disable launch
+observation and Pulse reconciliation; preserve the store. This remains bounded, best-effort observation: the journal
+capacity is unchanged and full stores report gaps rather than deleting evidence.
+
+### Periodic reconciliation in Pulse
+
+Normal Pulse invocations call `_pulse_reconcile_worker_lifecycle` from
+`pulse-wrapper-cycle-gates.sh` before refill, busy, idle and rate-limit early exits.
+This local pass is independent of new dispatch work or GitHub availability. It uses
+the same state-path precedence as the launchers and requires an absolute state path.
+Dry-run, canary, private-workload and lifecycle-disabled invocations skip it.
+
+Each pass considers at most 100 unfinished runs, using the registry's 5-second
+cooperative budget and a portable 10-second outer timeout. Existing cursor/version
+checks preserve fair batch rotation and reject stale concurrent observations.
+Unchanged `alive` or `unknown` results refresh only the optimistic version and
+rotation cursor, without appending journal events or replacing prior evidence.
+The cursor is a scheduling ordinal, independent of journal sequence numbers.
+First observations, changed results/reasons and terminal transitions remain
+journaled. Explicit event ingestion retains its existing replay contract.
+No store is created by a tick. Missing state is a no-op; invalid state, unavailable
+runtime, capacity exhaustion and timeouts are logged without blocking Pulse or
+replacing evidence. Unknown process observations never imply termination.
+
+After a worker exits, its record becomes `ended` on a subsequent successful pass,
+not through an immediate exit callback. With Pulse stopped there is no periodic
+reconciliation. This adds no daemon or scheduler, never signals workers, and does
+not change legacy ownership or `cleanup_authorized=false`.
 
 ### Atomic attempt contract
 
@@ -173,12 +222,11 @@ separate authorization and acceptance tests; this change does not introduce one.
 
 The existing tests include actual owned-process crashes before and after commit,
 concurrent replay, conflicting bindings and full-journal launch continuation.
-The current registry artifact passed all 30 included tests on Linux x86-64 and
-macOS Intel; both retained reports identify the same bundle fingerprint. See
-[COMPATIBILITY.md](COMPATIBILITY.md) for environments and remaining limitations.
+See [COMPATIBILITY.md](COMPATIBILITY.md) for tested artifact fingerprints,
+environments and remaining limitations.
 
-For a controlled experiment, initialize a dedicated store, enable the variable
-for ONE already-approved ordinary worker invocation, then run the
+For a controlled experiment, initialize a dedicated store and set
+`AIDEVOPS_LIFECYCLE_STATE_DIR` to its path for ONE already-approved ordinary worker invocation, then run the
 explicit `reconcile` and `status` commands above. Do not invent a new worker task
 or bypass its normal admission guards. Check the registration/gap log and compare
 the runtime's PID, exit and output with the ordinary launcher evidence. The shell
