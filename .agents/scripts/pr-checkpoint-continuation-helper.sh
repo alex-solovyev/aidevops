@@ -632,10 +632,12 @@ _pcc_blocked_release_evidence() {
 	local comments="$1" runner="$2" key="$3"
 	local trusted_logins="${4:-[]}"
 	jq -er --arg runner "$runner" --arg key "$key" --argjson trusted_logins "$trusted_logins" "${_PCC_JQ_RELEASE_DEFS}"'
+		# GH#35920: no `as` binding after `and`; jq 1.8 would bind the whole
+		# conjunction (a boolean) to the variable instead of the release line.
 		def blocked_by_runner:
 			unedited and login == $runner and
-			([body_lines | select(is_release)] | first // "") as $line |
-			($line | field("reason")) == "blocked" and ($line | field("runner")) == $runner;
+			([body_lines | select(is_release)] | first // ""
+				| field("reason") == "blocked" and field("runner") == $runner);
 		def episode_start($c; $rid):
 			[$c[] | select(.id < $rid and any(body_lines; startswith("DISPATCH_CLAIM "))) | .id] | max // -1;
 		def episode_attempt($c; $rid):
@@ -800,8 +802,9 @@ See \`reference/checkpoint-revision-recovery.md\`. Posted once per PR head and b
 <!-- ops:end -->"
 	# GH#35788: capability releases already support guarded automatic continuation
 	# (GH#34758). Do not send a runner prerequisite failure back to the brief owner.
+	# GH#35932: comments are slurped pages; iterate comments, not pages.
 	if jq -e --argjson id "$release_id" --arg line "$_PCC_CAPABILITY_RELEASE_LINE" \
-		'any(.[]; .id == $id and ((.body // "") | split("\n") | any(startswith($line))))' <<<"$comments" >/dev/null; then
+		'any(flatten[]; .id == $id and ((.body // "") | split("\n") | any(startswith($line))))' <<<"$comments" >/dev/null; then
 		body="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
 <!-- ${key} release=${release_id} -->
 BLOCKED_CHECKPOINT_ATTENTION pr=${pr} head=${head} release_comment=${release_id} attempt=${attempt:-unknown}
