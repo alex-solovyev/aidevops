@@ -119,10 +119,14 @@ Do not infer complete coverage from the two tested launch boundaries.
 
 ### Restartable generation enrollment
 
-`worktree_create_registered` invokes `worker-registry.py enroll --initialize`
+`worktree_create_registered` invokes `worker-registry.py enroll --initialize --allow-schema-1-observation`
 after creation and retains the tree if enrollment fails. Private/disabled
 observation is excluded. An absent store can be initialized; schema 1 is never
-implicitly migrated. Coordinate migration before deploying this creation hook.
+implicitly migrated. With this compatibility flag, an un-enrolled schema-1 tree
+continues observe-only with a `coverage-gap: schema-upgrade-required` diagnostic;
+it has no admitted generation. Existing markers or admission tables in schema 1
+are contradictions and cause refusal. Ordinary `enroll` remains schema-2-only.
+Coordinate migration before requiring admission for these installations.
 
 `enroll --path PATH` publishes a private `aidevops-generation.json` in the Git
 administrative directory, not among worktree files. It contains a UUID and the

@@ -108,6 +108,24 @@ class GenerationEnrollment:
     def __init__(self, store: LifecycleRegistry):
         self.store = store
 
+    def has_schema_one_gap(self, path: Path) -> bool:
+        """Recognize an un-enrolled schema-1 creation, never grant admission."""
+        with self.store.connection() as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
+                return False
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE name='generation_admissions'").fetchone():
+                raise StoreConflict("schema-one-with-admission-state")
+            self.store.summary()  # Validate the observation tables before compatibility handling.
+            with DirectoryHandle(path) as root:
+                directory = _git_directory(path)
+                with DirectoryHandle(directory) as admin:
+                    marker = directory / MARKER
+                    if marker.exists() or marker.is_symlink():
+                        raise StoreConflict("schema-one-with-generation-marker")
+                    if not root.matches_path() or not admin.matches_path():
+                        raise StoreConflict("generation-directory-changed")
+        return True
+
     def resolve(self, path: Path, *, create: bool = False) -> str:
         """Enroll or resolve; never initialize/migrate a DB or reopen a closed gate.
 

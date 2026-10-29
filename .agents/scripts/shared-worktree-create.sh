@@ -16,7 +16,7 @@ if ! declare -F _ds_substage_run >/dev/null 2>&1; then
 fi
 
 # Enroll only the newly created tree. Legacy records are not enrollment input.
-# This stage requires schema 2; installation must explicitly migrate schema 1.
+# Schema 1 stays observe-only with an explicit gap until coordinated migration.
 _worktree_enroll_generation() {
 	local path="$1"
 	local helper_dir="${BASH_SOURCE[0]%/*}"
@@ -32,7 +32,7 @@ _worktree_enroll_generation() {
 	path=$(cd -- "$path" && pwd -P) || return 1
 	local enrollment_result=""
 	if ! enrollment_result=$("$python" -E -s -B "${helper_dir}/../worker-lifecycle/worker-registry.py" \
-		--state-dir "$state_dir" enroll --initialize --path "$path"); then
+		--state-dir "$state_dir" enroll --initialize --allow-schema-1-observation --path "$path"); then
 		printf 'Generation enrollment refused: %s\n' "$enrollment_result" >&2
 		return 1
 	fi

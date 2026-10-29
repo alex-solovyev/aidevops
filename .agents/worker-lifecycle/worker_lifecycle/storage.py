@@ -70,7 +70,10 @@ class LifecycleRegistry:
         try:
             store._durability(connection)
             connection.execute("BEGIN IMMEDIATE")
+            # SQLite PRAGMAs cannot bind parameters; these are module integer constants, not input.
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             connection.execute(f"PRAGMA application_id={APPLICATION_ID}")
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             connection.execute(f"PRAGMA user_version={SCHEMA}")
             connection.execute("CREATE TABLE metadata (installation_id TEXT NOT NULL, mode TEXT NOT NULL CHECK(mode='observe-only'), max_events INTEGER NOT NULL CHECK(max_events BETWEEN 1 AND 100000))")
             connection.execute("INSERT INTO metadata VALUES (?, 'observe-only', ?)", (str(uuid4()), max_events))
@@ -94,6 +97,8 @@ class LifecycleRegistry:
         with self.connection(write=True) as connection:
             if connection.execute("PRAGMA user_version").fetchone()[0] == 1:
                 self._create_admissions(connection)
+                # Fixed module integer, not user SQL; SQLite PRAGMAs cannot bind parameters.
+                # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
                 connection.execute(f"PRAGMA user_version={SCHEMA}")
 
     def _connect(self) -> sqlite3.Connection:

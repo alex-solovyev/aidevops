@@ -203,7 +203,7 @@ class EnrollmentContract(unittest.TestCase):
             bindings = connection.execute("SELECT generation_id FROM bindings").fetchall()
             self.assertEqual([row[0] for row in bindings], [generation])
 
-    def test_enrollment_failure_diagnostic_survives_errexit(self):
+    def creation_enrollment(self, path):
         scripts = Path(__file__).resolve().parents[2] / "scripts"
         env = {name: value for name, value in os.environ.items()
                if not name.startswith(("GIT_", "AIDEVOPS_", "WORKTREE_"))}
@@ -211,11 +211,48 @@ class EnrollmentContract(unittest.TestCase):
         bash = shutil.which("bash")
         if bash is None:
             self.fail("Bash is required for enrollment diagnostics")
-        result = subprocess.run(  # nosec B603 # fixed Bash program and disposable fixture paths
+        return subprocess.run(  # nosec B603 # fixed Bash program and disposable fixture paths
             [bash, "-e", "-c", 'source "$1/shared-worktree-create.sh"; _worktree_enroll_generation "$2"',
-             "fixture", str(scripts), str(self.repo)],
+             "fixture", str(scripts), str(path)],
             cwd=self.root, env=env, capture_output=True, text=True, timeout=30,
         )
+
+    def test_schema_one_creation_reports_gap_without_migration(self):
+        with self.store.connection(write=True) as connection:
+            connection.execute("DROP TABLE generation_admissions")
+            connection.execute("PRAGMA user_version=1")
+        before = self.store.summary()
+        result = self.creation_enrollment(self.tree)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("coverage-gap: schema-upgrade-required", result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.store.summary(), before)
+        with self.store.connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+        with self.assertRaises(ValueError):
+            self.enrollment.resolve(self.tree, create=True)
+
+    def test_schema_one_compatibility_refuses_existing_marker(self):
+        self.enrollment.resolve(self.tree, create=True)
+        saved = self.marker.read_bytes()
+        with self.store.connection(write=True) as connection:
+            connection.execute("DROP TABLE generation_admissions")
+            connection.execute("PRAGMA user_version=1")
+        result = self.creation_enrollment(self.tree)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("Generation enrollment refused", result.stderr)
+        self.assertEqual(self.marker.read_bytes(), saved)
+
+    def test_schema_one_compatibility_refuses_admission_state(self):
+        with self.store.connection(write=True) as connection:
+            connection.execute("PRAGMA user_version=1")
+        result = self.creation_enrollment(self.tree)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(self.marker.exists())
+
+    def test_enrollment_failure_diagnostic_survives_errexit(self):
+        result = self.creation_enrollment(self.repo)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
         detail = json.loads(result.stderr.removeprefix("Generation enrollment refused: "))

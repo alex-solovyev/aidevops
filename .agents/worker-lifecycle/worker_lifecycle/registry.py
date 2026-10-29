@@ -77,7 +77,17 @@ def argument_parser() -> argparse.ArgumentParser:
         enrollment.add_argument("--path", required=True, type=Path)
         if name == "enroll":
             enrollment.add_argument("--initialize", action="store_true", help="create absent state; never migrate existing state")
+            enrollment.add_argument("--allow-schema-1-observation", action="store_true", help="report an unenrolled schema-1 creation as a coverage gap, never as admission")
     return parser
+
+
+def enrollment_result(store: LifecycleRegistry, args: argparse.Namespace) -> Mapping[str, object]:
+    enrollment = GenerationEnrollment(store)
+    if getattr(args, "allow_schema_1_observation", False) and enrollment.has_schema_one_gap(args.path):
+        print("[worker-lifecycle] coverage-gap: schema-upgrade-required; no generation admitted", file=sys.stderr)
+        return {"status": "coverage-gap", "reason": "schema-upgrade-required", "cleanup_authorized": False}
+    generation = enrollment.resolve(args.path, create=args.operation == "enroll")
+    return {"generation_id": generation, "cleanup_authorized": False}
 
 
 def execute_operation(store: LifecycleRegistry, args: argparse.Namespace) -> Mapping[str, object]:
@@ -90,8 +100,7 @@ def execute_operation(store: LifecycleRegistry, args: argparse.Namespace) -> Map
     elif args.operation == "ingest":
         ingest(store, sys.stdin.read(MAX_EVENT_BYTES + 1))
     if args.operation in ("enroll", "resolve-generation"):
-        generation = GenerationEnrollment(store).resolve(args.path, create=args.operation == "enroll")
-        return {"generation_id": generation, "cleanup_authorized": False}
+        return enrollment_result(store, args)
     return reconcile(store, args.limit) if args.operation == "reconcile" else store.summary()
 
 
