@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.86] - 2026-10-29
+
+### Changed
+
+- Maintenance: mark t18794 complete (pr:#35995 completed:2026-10-29) (#35997)
+- Maintenance: mark t18777 complete (pr:#35969 completed:2026-10-29) (#35987)
+- Maintenance: sync GitHub issue refs to TODO.md (#35988)
+- Documentation: scope and remove temporary SES bypass filter (#35981)
+- Tests: retain derived status label when inventory is unreadable (#35980)
+
+### Fixed
+
+- treat non-markdown data files under todo/ as deliverables
+- wait for merge-first test marker content (GH#36004) (#36006)
+- make draft checkpoint cooldown take effect across cycles (GH#36000) (#36001)
+- diagnose bounded-operation termination and preserve TERM grace (GH#35824) (#35835)
+- bound secret-run stderr backpressure (#35982)
+- preserve Starter-managed gitignore during init (#35963)
+
 ## [3.39.85] - 2026-10-29
 
 ### Added
