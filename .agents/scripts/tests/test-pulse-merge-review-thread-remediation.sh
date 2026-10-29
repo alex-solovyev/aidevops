@@ -6,7 +6,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 MERGE_SCRIPT="${SCRIPT_DIR}/../pulse-merge.sh"
-FEEDBACK_SCRIPT="${SCRIPT_DIR}/../pulse-merge-feedback.sh"
+# The trusted body-review classifier moved to the review sub-library; the stale
+# path made every case error out while reporting "Tests run: 0".
+FEEDBACK_SCRIPT="${SCRIPT_DIR}/../pulse-merge-feedback-review.sh"
 
 TESTS_RUN=0
 TESTS_FAILED=0
