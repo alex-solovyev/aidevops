@@ -4,6 +4,8 @@ Only the explicit admission mode uses this API. Observe-only callers still bypas
 admission and must not be counted as covered. Closing never authorizes cleanup.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 import sqlite3
 from uuid import UUID, uuid5

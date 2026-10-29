@@ -126,11 +126,14 @@ implicitly migrated. Coordinate migration before deploying this creation hook.
 
 `enroll --path PATH` publishes a private `aidevops-generation.json` in the Git
 administrative directory, not among worktree files. It contains a UUID and the
-installation, canonical paths and directory fingerprints. Publication does not
+installation, canonical paths and directory inodes (marker format 2). Publication does not
 overwrite another creator's marker. Repeating after an interruption between marker
 publication and the SQLite transaction finishes registration with the same UUID.
 `resolve-generation --path PATH` performs validation without creating metadata.
 Closed admission, damaged markers and detected directory replacement are refused.
+Format-1 compatibility and operation-local device checks are described in
+[REGISTRY.md](REGISTRY.md). Device-renumbering tests simulate the identity comparison;
+they do not establish native reboot/remount coverage on macOS.
 
 The fingerprint is not an everlasting physical identity: copied metadata and
 inode reuse outside the cooperating creation protocol are not excluded. It also

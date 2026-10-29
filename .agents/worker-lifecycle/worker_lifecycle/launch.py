@@ -1,5 +1,7 @@
 """Pre-exec observation, not a supervisor or durable launch protocol."""
 
+from __future__ import annotations
+
 import argparse
 import os
 from pathlib import Path

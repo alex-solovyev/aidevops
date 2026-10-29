@@ -80,7 +80,7 @@ an additional session protocol: process survival alone cannot settle it.
 - Failed passes are reported. A full journal prevents new events, but unchanged
   observations can still refresh scheduling metadata. Unmanaged observe-only execution continues;
   mandatory admitted execution is refused when registration cannot commit.
-  an evidence-preserving retention policy is needed for indefinite operation.
+  An evidence-preserving retention policy is needed for indefinite operation.
 
 `LifecycleRegistry` stores state in `registry.sqlite3` in `observe-only` mode.
 New stores use schema 2. Observation still accepts schema 1 without upgrading it;
@@ -92,6 +92,15 @@ is installed. Back up real state and coordinate clients before a future upgrade:
 older schema-1-only code will reject schema 2. Do not reset or downgrade live state.
 Event envelope schema 1 is separate and unchanged. Admission requirements and
 current integration limitations are documented in [CLEANUP.md](CLEANUP.md).
+
+Generation marker format 2 records the directory inodes alongside canonical paths,
+installation and generation UUIDs. Device numbers may change between mounts and
+are checked only by the live directory handles during each operation. Format-1
+markers are interpreted in memory without rewriting them: valid nonnegative integer
+pairs supply their inode components, while every other identity field and the Git
+backlink must still match. Closed admission stays closed. This is cooperative
+protocol identity, not proof against copied metadata, volume clones or inode reuse.
+Older clients cannot read format 2; coordinate clients before new enrollment.
 
 The store is not a trust boundary against malicious same-user code. Installation
 UUIDs must not be cloned onto another host; host binding/migration is not enforced
@@ -268,9 +277,11 @@ not successful exec, application readiness, job completion or no-writers proof.
 
 The wrapper allocates a fresh run ID per invocation. It does not persist a retry
 request outside the registry or retry native execution; store-level idempotency
-does not guarantee capture when storage is unavailable. There is no atomic
-transaction spanning SQLite and exec. A future strict admission mode would need
-separate authorization and acceptance tests; this change does not introduce one.
+does not guarantee capture when storage is unavailable. An observe-only launch may
+continue with a coverage-gap diagnostic. Explicit admitted launches instead refuse
+execution when admission cannot be confirmed. Neither mode provides an atomic
+transaction spanning SQLite and exec. Universal mandatory admission remains a
+separate rollout requiring authorization and acceptance tests.
 
 The existing tests include actual owned-process crashes before and after commit,
 concurrent replay, conflicting bindings and full-journal launch continuation.

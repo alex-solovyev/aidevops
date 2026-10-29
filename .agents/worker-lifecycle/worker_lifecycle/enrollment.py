@@ -48,9 +48,24 @@ def _git_directory(path: Path) -> Path:
     return directory
 
 
-def _fingerprint(path: Path) -> list[int]:
-    info = path.stat(follow_symlinks=False)
-    return [info.st_dev, info.st_ino]
+def _directory_inode(path: Path) -> int:
+    """Persistent protocol evidence; device numbers are operation-local only."""
+    return path.stat(follow_symlinks=False).st_ino
+
+
+def _marker_identity(value: dict) -> dict:
+    """Read format 1 without rewriting it or trusting obsolete device numbers."""
+    version = value.get("format")
+    if type(version) is not int or version != 1:
+        return value
+    normalized = dict(value, format=2)
+    for field in ("directory", "git_identity"):
+        pair = value.get(field)
+        if (not isinstance(pair, list) or len(pair) != 2
+                or any(type(number) is not int or number < 0 for number in pair)):
+            raise StoreConflict("invalid-generation-directory-identity")
+        normalized[field] = pair[1]
+    return normalized
 
 
 def _read_marker(path: Path) -> dict:
@@ -64,7 +79,7 @@ def _read_marker(path: Path) -> dict:
     if not isinstance(value, dict) or not isinstance(value.get("generation_id"), str):
         raise ValueError("invalid-generation-marker")
     identifier(value["generation_id"])
-    return value
+    return _marker_identity(value)
 
 
 def _publish(directory: Path, value: dict) -> None:
@@ -106,9 +121,9 @@ class GenerationEnrollment:
             directory = _git_directory(path)
             with DirectoryHandle(directory) as admin:
                 expected = {
-                    "format": 1, "installation_id": self.store.installation_id(),
-                    "path": str(path), "directory": _fingerprint(path),
-                    "git_directory": str(directory), "git_identity": _fingerprint(directory),
+                    "format": 2, "installation_id": self.store.installation_id(),
+                    "path": str(path), "directory": _directory_inode(path),
+                    "git_directory": str(directory), "git_identity": _directory_inode(directory),
                 }
                 marker = directory / MARKER
                 if create and not marker.exists() and not marker.is_symlink():
