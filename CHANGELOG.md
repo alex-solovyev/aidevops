@@ -10,6 +10,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.81] - 2026-10-29
+
+### Added
+
+- enable worker lifecycle observation by default
+- add portable worker lifecycle registry (GH#35821) (#35826)
+
+### Changed
+
+- Refactor: split worker-briefed trust chain out of pulse-merge-process.sh (GH#27171) (#35847)
+- Refactor: clarify lifecycle storage module naming
+- Refactor: extract worker launch bundle routing (GH#35810) (#35813)
+
+### Fixed
+
+- suppress already-applied closed-PR salvage candidates
+- post advisory COMMENTED reviews instead of blocking CHANGES_REQUESTED (GH#35860)
+- preserve public framework name without exposing credential assignments (GH#35829) (#35833)
+- preserve contrast findings in browser QA (GH#35823) (#35825)
+- teach workers the source-access blocker class (GH#35819) (#35820)
+- respect bare changelog version headings (GH#35811) (#35815)
+- stop fleet capability redispatch loops (#35806)
+
 ## [3.39.80] - 2026-10-28
 
 ### Fixed
