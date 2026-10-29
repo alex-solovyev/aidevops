@@ -10,6 +10,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.85] - 2026-10-29
+
+### Added
+
+- read-only Claude Code agent_summary exposure diagnostic and cost-visibility guidance
+- annotate interactive user turns with receive time (#35889)
+
+### Changed
+
+- Maintenance: mark t18788 complete (pr:#35944 completed:2026-10-29) (#35958)
+- Maintenance: sync ref:GH#35939 to TODO.md (#35940)
+- Maintenance: mark t18784 complete (pr:#35916 completed:2026-10-29) (#35926)
+
+### Fixed
+
+- accept legacy-guards worktree creation in archive restoration proof and recover interrupted verification slots
+- Playwriter Task handoff waits for a new attachment and classifies stale re-attached tabs
+- let partial terminal-blocker scans wake the recovery supervisor
+- route Claude Code version checks and upgrades by install owner
+- create issues on external repos when derived labels cannot be provisioned
+- count capability releases as one stall and let capable runners continue the head
+- portable binding precedence for jq 1.7/1.8 and a blocking gate
+- label Docker test stacks and clean anonymous volumes (#35921)
+- surface non-fork SonarCloud scan failures (GH#35917) (#35919)
+- preserve one recovery worktree across failed retries (#35922)
+- align capability secret check stubs with current helper (#35903)
+
 ## [3.39.84] - 2026-10-29
 
 ### Changed
