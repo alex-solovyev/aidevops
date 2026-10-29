@@ -5,6 +5,7 @@ from collections.abc import Mapping
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import time
 from typing import TypedDict
@@ -12,6 +13,8 @@ from uuid import uuid4
 
 from .process import ObservationUnavailable, ProcessIdentity
 from .events import ingest
+from .enrollment import GenerationEnrollment
+from .launch import initialize_or_open
 from .runtime import adapter_for, require_ready
 from .storage import MAX_EVENT_BYTES, LifecycleRegistry, StoreCapacity, StoreConflict
 
@@ -69,6 +72,11 @@ def main() -> int:
     bind.add_argument("--path", required=True)
     scan = commands.add_parser("reconcile")
     scan.add_argument("--limit", type=int, default=100)
+    for name in ("enroll", "resolve-generation"):
+        enrollment = commands.add_parser(name, help="enroll or resolve a linked worktree; schema 2 required")
+        enrollment.add_argument("--path", required=True, type=Path)
+        if name == "enroll":
+            enrollment.add_argument("--initialize", action="store_true", help="create absent state; never migrate existing state")
     args = parser.parse_args()
     result: Mapping[str, object]
     try:
@@ -76,7 +84,11 @@ def main() -> int:
             require_ready(adapter_for(str(uuid4())))
             result = LifecycleRegistry.initialize(args.state_dir, max_events=args.max_events).summary()
         else:
-            store = LifecycleRegistry(args.state_dir)
+            if args.operation == "enroll" and args.initialize:
+                require_ready(adapter_for(str(uuid4())))
+                store = initialize_or_open(args.state_dir)
+            else:
+                store = LifecycleRegistry(args.state_dir)
             if args.operation == "register":
                 adapter = adapter_for(store.installation_id())
                 require_ready(adapter)
@@ -85,10 +97,14 @@ def main() -> int:
                 store.bind(args.event_id, args.run_id, args.generation_id, args.path)
             elif args.operation == "ingest":
                 ingest(store, sys.stdin.read(MAX_EVENT_BYTES + 1))
-            result = reconcile(store, args.limit) if args.operation == "reconcile" else store.summary()
+            if args.operation in ("enroll", "resolve-generation"):
+                generation = GenerationEnrollment(store).resolve(args.path, create=args.operation == "enroll")
+                result = {"generation_id": generation, "cleanup_authorized": False}
+            else:
+                result = reconcile(store, args.limit) if args.operation == "reconcile" else store.summary()
         print(json.dumps(result, sort_keys=True))
         return 0
-    except (ValueError, OSError, sqlite3.Error, ObservationUnavailable) as error:
+    except (ValueError, OSError, sqlite3.Error, subprocess.SubprocessError, ObservationUnavailable) as error:
         reason = str(error) if isinstance(error, (ObservationUnavailable, StoreCapacity)) else type(error).__name__
         print(json.dumps({"mode": "observe-only", "status": "unavailable", "reason": reason,
                           "cleanup_authorized": False}, sort_keys=True))

@@ -18,7 +18,7 @@ from .process import ProcessIdentity, ProcessObservation
 
 
 APPLICATION_ID = 0x574C4353
-SCHEMA = 1
+SCHEMA = 2
 MAX_EVENT_BYTES = 16384
 
 
@@ -79,10 +79,22 @@ class LifecycleRegistry:
             connection.execute("CREATE INDEX unfinished ON runs(state, checked_sequence, run_id)")
             connection.execute("CREATE TABLE generations (generation_id TEXT PRIMARY KEY, path TEXT NOT NULL)")
             connection.execute("CREATE TABLE bindings (run_id TEXT NOT NULL REFERENCES runs(run_id), generation_id TEXT NOT NULL REFERENCES generations(generation_id), PRIMARY KEY(run_id,generation_id))")
+            store._create_admissions(connection)
             connection.commit()
         finally:
             connection.close()
         return store
+
+    @staticmethod
+    def _create_admissions(connection: sqlite3.Connection) -> None:
+        connection.execute("CREATE TABLE generation_admissions (generation_id TEXT PRIMARY KEY REFERENCES generations(generation_id), path TEXT UNIQUE NOT NULL, state TEXT NOT NULL CHECK(state IN ('open','closed')))")
+
+    def upgrade_schema(self) -> None:
+        """Explicit transactional upgrade; never adopt historical bindings as owners."""
+        with self.connection(write=True) as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] == 1:
+                self._create_admissions(connection)
+                connection.execute(f"PRAGMA user_version={SCHEMA}")
 
     def _connect(self) -> sqlite3.Connection:
         _private(self.directory, directory=True)
@@ -111,7 +123,7 @@ class LifecycleRegistry:
         try:
             if connection.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
                 raise ValueError("not-a-worker-lifecycle-database")
-            if connection.execute("PRAGMA user_version").fetchone()[0] != SCHEMA:
+            if connection.execute("PRAGMA user_version").fetchone()[0] not in (1, SCHEMA):
                 raise ValueError("unsupported-store-schema")
             if write:
                 self._durability(connection)
