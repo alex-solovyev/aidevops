@@ -464,7 +464,7 @@ _cb_rest_core_unknown_progress_allows() {
 # Apply a REST priority class to one already-observed budget snapshot.
 #
 # Args:
-#   $1 - critical, progress, or deferrable.
+#   $1 - critical, scheduled, progress, or deferrable.
 #   $2 - output from pulse_rest_core_priority_snapshot.
 # Returns: 0 allowed; 1 deferred by threshold; 2 unknown/invalid evidence.
 #######################################
@@ -475,7 +475,7 @@ _cb_rest_core_priority_decision_allows() {
 	critical)
 		return 0
 		;;
-	progress | deferrable) ;;
+	scheduled | progress | deferrable) ;;
 	*) return 2 ;;
 	esac
 
@@ -508,6 +508,13 @@ _cb_rest_core_priority_decision_allows() {
 		return 2
 	fi
 
+	# Scheduled slots can use the headroom background/progress work preserves,
+	# but must leave the hard floor plus a small per-launch allowance intact.
+	if [[ "$priority" == "scheduled" ]]; then
+		[[ "$remaining" -gt $((hard_floor + 25)) ]] && return 0
+		return 1
+	fi
+
 	local progress_start_floor
 	progress_start_floor=$(_cb_rest_core_progress_start_floor "$hard_floor" "$soft_cap") || return 2
 	if [[ "$priority" == "progress" ]]; then
@@ -526,7 +533,7 @@ _cb_rest_core_priority_decision_allows() {
 #######################################
 # Return whether a REST priority class may start new API-heavy work.
 #
-# Args: $1 - critical, progress, or deferrable.
+# Args: $1 - critical, scheduled, progress, or deferrable.
 # Returns: 0 allowed; 1 deferred by threshold; 2 unknown/invalid evidence.
 #######################################
 pulse_rest_core_priority_allows() {
@@ -535,7 +542,7 @@ pulse_rest_core_priority_allows() {
 	critical)
 		return 0
 		;;
-	progress | deferrable) ;;
+	scheduled | progress | deferrable) ;;
 	*) return 2 ;;
 	esac
 
@@ -558,7 +565,7 @@ pulse_rest_core_priority_allows_next() {
 	critical)
 		return 0
 		;;
-	progress | deferrable) ;;
+	scheduled | progress | deferrable) ;;
 	*) return 2 ;;
 	esac
 
