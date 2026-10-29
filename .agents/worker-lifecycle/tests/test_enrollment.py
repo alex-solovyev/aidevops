@@ -48,6 +48,12 @@ class EnrollmentContract(unittest.TestCase):
         self.assertEqual(self.store.summary(), before)
         self.assertEqual(self.git("-C", str(self.tree), "status", "--porcelain").stdout, b"")
 
+    def test_git_query_treats_shell_metacharacters_as_path_data(self):
+        path = self.root / "tree ; $(false) $HOME"
+        self.git("-C", str(self.repo), "worktree", "add", "-q", "--detach", str(path))
+        generation = self.enrollment.resolve(path, create=True)
+        self.assertEqual(self.enrollment.resolve(path), generation)
+
     def test_interruption_between_marker_and_transaction_is_recoverable(self):
         with patch.object(AdmissionRegistry, "open_generation", side_effect=OSError("interrupted")):
             with self.assertRaises(OSError):

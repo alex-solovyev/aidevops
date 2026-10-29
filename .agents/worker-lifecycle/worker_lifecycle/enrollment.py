@@ -28,9 +28,12 @@ def _git_directory(path: Path) -> Path:
     git = shutil.which("git", path=env.get("PATH"))
     if git is None:
         raise ValueError("git-executable-unavailable")
+    # The operator controls PATH; this CLI does not accept an executable from a
+    # remote request. Git flags are fixed and the directory is one literal argv
+    # element. Shell quoting here would corrupt valid directory names.
     result = subprocess.run(  # nosec B603 # resolved executable, fixed flags, canonical path as one argv item
-        [git, "-C", str(path), "rev-parse", "--absolute-git-dir"],
-        env=env, capture_output=True, check=True, timeout=10,
+        [git, "-C", str(path), "rev-parse", "--absolute-git-dir"],  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+        env=env, capture_output=True, check=True, timeout=10, shell=False,
     )
     directory = Path(os.fsdecode(result.stdout.removesuffix(b"\n")))
     if not directory.is_absolute() or directory.resolve(strict=True) != directory:
