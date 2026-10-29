@@ -55,7 +55,7 @@ def record(state_dir: Path, worktree: Path, initialize: bool = False) -> str:
     return run_id
 
 
-def enrolled_generation(state_dir: Path, worktree: Path, initialize: bool) -> str | None:
+def enrolled_generation(state_dir: Path, worktree: Path, initialize: bool) -> tuple[str, Path] | None:
     """Select registered generations, never infer them from legacy bindings.
 
     Bootstrap failures still belong to the observe-only rollout gap. A known
@@ -63,15 +63,19 @@ def enrolled_generation(state_dir: Path, worktree: Path, initialize: bool) -> st
     """
     require_ready(adapter_for(str(uuid4())))
     store = initialize_or_open(state_dir) if initialize else LifecycleRegistry(state_dir)
-    path = worktree.resolve(strict=True)
+    # A declared reservation must not disappear through symlink resolution.
+    path = Path(os.path.abspath(worktree))
     with store.connection() as connection:
         if connection.execute("PRAGMA user_version").fetchone()[0] == 1:
             return None
         row = connection.execute("SELECT 1 FROM generation_admissions WHERE path=?", (str(path),)).fetchone()
+        if row is None:
+            path = worktree.resolve(strict=True)
+            row = connection.execute("SELECT 1 FROM generation_admissions WHERE path=?", (str(path),)).fetchone()
     if row is None:
         return None
     try:
-        return GenerationEnrollment(store).resolve(path)
+        return GenerationEnrollment(store).resolve(path), path
     except (ValueError, OSError, RuntimeError, sqlite3.Error, subprocess.SubprocessError) as error:
         raise AdmissionClosed("enrolled-generation-unavailable") from error
 
@@ -97,9 +101,10 @@ def main() -> int:
             parser.error("admission requires existing state; --initialize is not allowed")
         return run_admitted(args.state_dir, args.worktree, args.run_id, args.generation_id, command)
     try:
-        generation = enrolled_generation(args.state_dir, args.worktree, args.initialize)
-        if generation is not None:
-            return run_admitted(args.state_dir, args.worktree.resolve(strict=True), str(uuid4()), generation, command)
+        enrollment = enrolled_generation(args.state_dir, args.worktree, args.initialize)
+        if enrollment is not None:
+            generation, path = enrollment
+            return run_admitted(args.state_dir, path, str(uuid4()), generation, command)
         run_id = record(args.state_dir, args.worktree, args.initialize)
         print(f"[worker-lifecycle] registered run={run_id} pid={os.getpid()}", file=sys.stderr)
     except AdmissionClosed:

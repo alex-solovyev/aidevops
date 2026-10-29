@@ -169,14 +169,46 @@ class EnrollmentContract(unittest.TestCase):
         os.link(self.marker, self.marker.parent / ".interrupted-publish.tmp")
         self.assertEqual(self.enrollment.resolve(self.tree, create=True), self.enrollment.resolve(self.tree))
 
-    def launch(self, path):
+    def launch(self, path, *, cwd=None, sentinel=None):
         entry = Path(__file__).resolve().parents[1] / "worker-launch.py"
         return subprocess.run(  # nosec B603 # fixed Python entry point and disposable marker command
             [sys.executable, "-E", "-s", "-B", str(entry), "--initialize",
              "--state-dir", str(self.store.directory), "--worktree", str(path),
-             "--", "touch", str(path / "executed")],
-            cwd=path, capture_output=True, text=True, timeout=30,
+             "--", "touch", str(sentinel or path / "executed")],
+            cwd=cwd or path, capture_output=True, text=True, timeout=30,
         )
+
+    def test_missing_registered_path_cannot_fall_back_to_observation(self):
+        generation = self.enrollment.resolve(self.tree, create=True)
+        AdmissionRegistry(self.store).close_generation(str(uuid4()), generation)
+        before = self.store.summary()
+        self.tree.rename(self.root / "moved")
+        sentinel = self.root / "executed"
+        result = self.launch(self.tree, cwd=self.root, sentinel=sentinel)
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertFalse(sentinel.exists())
+        self.assertEqual(self.store.summary(), before)
+
+    def test_replaced_registered_path_cannot_fall_back_to_observation(self):
+        generation = self.enrollment.resolve(self.tree, create=True)
+        AdmissionRegistry(self.store).close_generation(str(uuid4()), generation)
+        before = self.store.summary()
+        self.tree.rename(self.root / "moved")
+        self.tree.symlink_to(self.repo, target_is_directory=True)
+        sentinel = self.root / "executed"
+        result = self.launch(self.tree, cwd=self.root, sentinel=sentinel)
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertFalse(sentinel.exists())
+        self.assertEqual(self.store.summary(), before)
+
+    def test_unreserved_alias_uses_canonical_generation(self):
+        generation = self.enrollment.resolve(self.tree, create=True)
+        alias = self.root / "alias"
+        alias.symlink_to(self.tree, target_is_directory=True)
+        result = self.launch(alias)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with self.store.connection() as connection:
+            self.assertEqual(connection.execute("SELECT generation_id FROM bindings").fetchone()[0], generation)
 
     def test_creation_hook_and_automatic_launch_share_generation(self):
         scripts = Path(__file__).resolve().parents[2] / "scripts"
