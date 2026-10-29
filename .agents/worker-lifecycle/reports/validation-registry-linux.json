@@ -1,5 +1,5 @@
 {
-  "bundle_sha256": "f199fdba2a000495f5c8635617072f6808576562435802dc16170bcd44691116",
+  "bundle_sha256": "d132b283f9824ea64d9a781394ee1d1528c91f06ecf2c522dfc6129e9409f98f",
   "checks": [
     {
       "name": "tests.test_storage.StorageContract.test_atomic_attempt_binding_conflict_rolls_back_registration",
@@ -299,7 +299,7 @@
   "suite": "registry-integration",
   "system": "Linux",
   "tests_run": 71,
-  "timestamp": "2026-10-29T17:49:57.366312+00:00",
+  "timestamp": "2026-10-29T18:42:57.398027+00:00",
   "untested": [
     "power-loss",
     "disk-full",

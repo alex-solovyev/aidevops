@@ -6,7 +6,7 @@ tests are intentionally outside the portable standard-library validator.
 
 import os
 from pathlib import Path
-import subprocess
+import subprocess  # nosec B404 # fixed launcher fixtures, not external commands
 import tempfile
 import unittest
 from uuid import uuid4
@@ -58,7 +58,7 @@ class LauncherPathsContract(unittest.TestCase):
             command = ["bash", "-c", BARE, "fixture", str(SCRIPTS), str(self.root)]
         else:
             command = ["bash", str(SCRIPTS / "sandbox-exec-helper.sh"), "run", "touch", str(self.marker)]
-        return subprocess.run(command, cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
+        return subprocess.run(command, cwd=self.root, env=env, capture_output=True, text=True, timeout=30)  # nosec B603 # constant fixture program, positional argv only
 
     def test_both_paths_admit_native_command(self):
         for kind in ("bare", "sandbox"):

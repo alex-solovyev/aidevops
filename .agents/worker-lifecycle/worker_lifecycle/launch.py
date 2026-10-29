@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import signal
 import sqlite3
-import subprocess
+import subprocess  # nosec B404 # exception type only; Git execution is audited in enrollment.py
 import sys
 import time
 from uuid import uuid4

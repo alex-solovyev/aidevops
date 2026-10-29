@@ -7,8 +7,9 @@ Copied metadata and inode reuse outside this protocol are not excluded by it.
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
-import subprocess
+import subprocess  # nosec B404 # read-only Git query using explicit argv, never a shell
 from uuid import UUID, uuid4, uuid5
 
 from .admission import AdmissionClosed, AdmissionRegistry
@@ -24,8 +25,11 @@ def _git_directory(path: Path) -> Path:
         raise ValueError("linked-worktree-required")
     # An inherited Git environment must not redirect enrollment to another tree.
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    result = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "--absolute-git-dir"],
+    git = shutil.which("git", path=env.get("PATH"))
+    if git is None:
+        raise ValueError("git-executable-unavailable")
+    result = subprocess.run(  # nosec B603 # resolved executable, fixed flags, canonical path as one argv item
+        [git, "-C", str(path), "rev-parse", "--absolute-git-dir"],
         env=env, capture_output=True, check=True, timeout=10,
     )
     directory = Path(os.fsdecode(result.stdout.removesuffix(b"\n")))

@@ -5,7 +5,7 @@ from collections.abc import Mapping
 import json
 from pathlib import Path
 import sqlite3
-import subprocess
+import subprocess  # nosec B404 # exception type only; Git execution is audited in enrollment.py
 import sys
 import time
 from typing import TypedDict
@@ -53,7 +53,7 @@ def reconcile(store: LifecycleRegistry, limit: int = 100, budget: float = 5) -> 
     return result
 
 
-def main() -> int:
+def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, required=True)
     commands = parser.add_subparsers(dest="operation", required=True)
@@ -77,7 +77,26 @@ def main() -> int:
         enrollment.add_argument("--path", required=True, type=Path)
         if name == "enroll":
             enrollment.add_argument("--initialize", action="store_true", help="create absent state; never migrate existing state")
-    args = parser.parse_args()
+    return parser
+
+
+def execute_operation(store: LifecycleRegistry, args: argparse.Namespace) -> Mapping[str, object]:
+    if args.operation == "register":
+        adapter = adapter_for(store.installation_id())
+        require_ready(adapter)
+        store.register(args.event_id, args.run_id, adapter.capture(args.pid))
+    elif args.operation == "bind":
+        store.bind(args.event_id, args.run_id, args.generation_id, args.path)
+    elif args.operation == "ingest":
+        ingest(store, sys.stdin.read(MAX_EVENT_BYTES + 1))
+    if args.operation in ("enroll", "resolve-generation"):
+        generation = GenerationEnrollment(store).resolve(args.path, create=args.operation == "enroll")
+        return {"generation_id": generation, "cleanup_authorized": False}
+    return reconcile(store, args.limit) if args.operation == "reconcile" else store.summary()
+
+
+def main() -> int:
+    args = argument_parser().parse_args()
     result: Mapping[str, object]
     try:
         if args.operation == "init":
@@ -89,19 +108,7 @@ def main() -> int:
                 store = initialize_or_open(args.state_dir)
             else:
                 store = LifecycleRegistry(args.state_dir)
-            if args.operation == "register":
-                adapter = adapter_for(store.installation_id())
-                require_ready(adapter)
-                store.register(args.event_id, args.run_id, adapter.capture(args.pid))
-            elif args.operation == "bind":
-                store.bind(args.event_id, args.run_id, args.generation_id, args.path)
-            elif args.operation == "ingest":
-                ingest(store, sys.stdin.read(MAX_EVENT_BYTES + 1))
-            if args.operation in ("enroll", "resolve-generation"):
-                generation = GenerationEnrollment(store).resolve(args.path, create=args.operation == "enroll")
-                result = {"generation_id": generation, "cleanup_authorized": False}
-            else:
-                result = reconcile(store, args.limit) if args.operation == "reconcile" else store.summary()
+            result = execute_operation(store, args)
         print(json.dumps(result, sort_keys=True))
         return 0
     except (ValueError, OSError, sqlite3.Error, subprocess.SubprocessError, ObservationUnavailable) as error:

@@ -6,7 +6,7 @@ the standalone standard-library validator. Only disposable repositories are used
 
 import os
 from pathlib import Path
-import subprocess
+import subprocess  # nosec B404 # fixed Git/archive operations in disposable repositories
 import tempfile
 import unittest
 
@@ -47,7 +47,7 @@ class PreservationContract(unittest.TestCase):
         self.git(self.work, "commit", "-qm", "unpublished work")
 
     def command(self, *args, check=True):
-        result = subprocess.run([str(arg) for arg in args], env=self.env, capture_output=True, timeout=60)
+        result = subprocess.run([str(arg) for arg in args], env=self.env, capture_output=True, timeout=60)  # nosec B603 # test-owned argv, no shell interpolation
         if check:
             self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
         return result

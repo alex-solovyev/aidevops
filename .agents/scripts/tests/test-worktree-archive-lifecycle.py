@@ -52,6 +52,7 @@ class ArchiveLifecycle(AdministrationCases, CanonicalCases, MergeCases, Producer
                         AIDEVOPS_RECOVERY_TIMING_LOG=str(self.root / "timing.jsonl"),
                         AIDEVOPS_WORKTREE_RECOVERY_POLICY="git-only",
                         AIDEVOPS_WORKTREE_BASE_DIR=str(self.root),
+                        AIDEVOPS_LIFECYCLE_STATE_DIR=str(self.root / "lifecycle"),
                         HOME=str(self.root),
                         WORKTREE_REGISTRY_DIR=str(self.root / "registry"),
                         WORKTREE_REGISTRY_DB=str(self.root / "registry/worktree-registry.db"),

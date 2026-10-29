@@ -3,7 +3,8 @@
 from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
-import subprocess
+import shutil
+import subprocess  # nosec B404 # owned Git and native processes in disposable fixtures
 import sys
 import tempfile
 import unittest
@@ -30,8 +31,11 @@ class EnrollmentContract(unittest.TestCase):
         self.marker = _git_directory(self.tree) / MARKER
 
     def git(self, *args):
-        return subprocess.run(
-            ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+        git = shutil.which("git")
+        if git is None:
+            self.fail("Git is required for enrollment integration")
+        return subprocess.run(  # nosec B603 # resolved Git, fixed test operations, no shell
+            [git, "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
              "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", *args],
             check=True, capture_output=True, timeout=15,
         )
@@ -108,7 +112,7 @@ class EnrollmentContract(unittest.TestCase):
 
     def launch(self, path):
         entry = Path(__file__).resolve().parents[1] / "worker-launch.py"
-        return subprocess.run(
+        return subprocess.run(  # nosec B603 # fixed Python entry point and disposable marker command
             [sys.executable, "-E", "-s", "-B", str(entry), "--initialize",
              "--state-dir", str(self.store.directory), "--worktree", str(path),
              "--", "touch", str(path / "executed")],
@@ -122,8 +126,11 @@ class EnrollmentContract(unittest.TestCase):
                if not key.startswith(("AIDEVOPS_", "GIT_", "WORKTREE_"))}
         env.update(HOME=str(self.root), AIDEVOPS_LIFECYCLE_STATE_DIR=str(self.store.directory),
                    GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath", GIT_CONFIG_VALUE_0="/dev/null")
-        result = subprocess.run(
-            ["bash", "-c", 'source "$1/shared-constants.sh" && source "$1/shared-worktree-create.sh" '
+        bash = shutil.which("bash")
+        if bash is None:
+            self.fail("Bash is required for creation-hook integration")
+        result = subprocess.run(  # nosec B603 # constant shell program; paths passed as quoted positional argv
+            [bash, "-c", 'source "$1/shared-constants.sh" && source "$1/shared-worktree-create.sh" '
              '&& worktree_create_registered "$2" "$3" HEAD --detach',
              "fixture", str(scripts), str(self.repo), str(created)],
             cwd=self.root, env=env, capture_output=True, text=True, timeout=40,

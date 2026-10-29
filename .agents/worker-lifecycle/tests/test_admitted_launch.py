@@ -1,7 +1,7 @@
 """Real native exec/denial checks using disposable state and owned subprocesses."""
 
 from pathlib import Path
-import subprocess
+import subprocess  # nosec B404 # owned native processes in disposable test directories
 import sys
 import tempfile
 import unittest
@@ -27,7 +27,7 @@ class AdmittedLaunchContract(unittest.TestCase):
         self.marker = self.root / "executed"
 
     def launch(self, *, state=None, generation=None, run=None, cwd=None, worktree=None, extra=()):
-        return subprocess.run(
+        return subprocess.run(  # nosec B603 # fixed interpreter and fixture program, argv only
             [sys.executable, "-E", "-s", "-B", str(ENTRY),
              "--state-dir", str(state or self.store.directory),
              "--worktree", str(worktree or self.root),

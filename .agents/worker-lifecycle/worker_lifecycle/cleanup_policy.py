@@ -39,16 +39,13 @@ def decide_cleanup(evidence: CleanupEvidence) -> CleanupDecision:
         (evidence.generation_verified, "generation-unverified"),
         (evidence.admission_closed, "admission-not-closed"),
         (evidence.ownership_complete, "ownership-incomplete"),
+        (bool(evidence.run_states) and all(state == "ended" for state in evidence.run_states), "runs-not-confirmed-ended"),
+        (evidence.writers_quiescent, "writers-not-quiescent"),
+        (evidence.inventory_complete, "inventory-incomplete"),
     )
     for satisfied, reason in requirements:
         if satisfied is not True:
             return CleanupDecision("hold", reason)
-    if not evidence.run_states or any(state != "ended" for state in evidence.run_states):
-        return CleanupDecision("hold", "runs-not-confirmed-ended")
-    if evidence.writers_quiescent is not True:
-        return CleanupDecision("hold", "writers-not-quiescent")
-    if evidence.inventory_complete is not True:
-        return CleanupDecision("hold", "inventory-incomplete")
     if evidence.preservation == "required":
         return CleanupDecision("archive-candidate", "local-results-require-preservation")
     if evidence.preservation == "verified":
