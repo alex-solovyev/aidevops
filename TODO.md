@@ -1772,6 +1772,10 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18799 fix(pulse): continue open worker drafts after draft-checkpoint, clean and completed releases #bug #priority:high ref:GH#36019 pr:#36023 completed:2026-10-30
 
+- [ ] t18800 fix(pulse): restore stranded worker drafts blocked by pre-v3.39.89 release projections #bug #priority:high ref:GH#36028
+
+- [ ] t18801 fix(interactive-session): claim must not silently skip when REST core is exhausted #auto-dispatch #bug #priority:medium ref:GH#36036
+
 ## In Progress
 
 - [x] t18768 Adapt Impeccable, Taste Skill and Fontjoy design guidance without tracking #feat #interactive #auto-dispatch tier:standard ~2h ref:GH#35590 assignee:marcusquinn pr:#35591 logged:2026-10-25 started:2026-10-25 -> [todo/tasks/t18768-brief.md] completed:2026-10-25
