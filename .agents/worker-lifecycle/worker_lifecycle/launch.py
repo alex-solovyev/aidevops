@@ -154,7 +154,7 @@ def execute(command: list[str], *, admitted: bool = False) -> int:
         # The calling launcher admits it before wrapping; no shell is introduced.
         # PATH and the installed runtime remain trusted caller inputs.
         # nosemgrep: python.lang.security.audit.dangerous-os-exec-tainted-env-args.dangerous-os-exec-tainted-env-args
-        os.execvpe(command[0], command, environment)  # nosec B606 # intentional trusted launcher argv, no shell
+        os.execvpe(command[0], command, environment)  # noqa: S606  # nosec B606
     except OSError as error:
         print(f"[worker-lifecycle] exec-failed reason={type(error).__name__}", file=sys.stderr)
         return 127 if isinstance(error, FileNotFoundError) else 126

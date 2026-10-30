@@ -60,23 +60,33 @@ class AdmittedLaunchContract(unittest.TestCase):
         self.assertEqual(before, self.store.summary())
 
     def test_native_environment_consumes_only_admission_ids(self):
+        """Consume attempt IDs without altering unrelated native environment."""
         run = str(uuid4())
         names = ("AIDEVOPS_LIFECYCLE_RUN_ID", "AIDEVOPS_LIFECYCLE_GENERATION_ID",
                  "AIDEVOPS_LIFECYCLE_STATE_DIR", "NATIVE_ENV_SENTINEL")
-        environment = dict(os.environ, AIDEVOPS_LIFECYCLE_RUN_ID=run,
-                           AIDEVOPS_LIFECYCLE_GENERATION_ID=self.generation,
-                           AIDEVOPS_LIFECYCLE_STATE_DIR=str(self.store.directory), NATIVE_ENV_SENTINEL="preserved")
-        result = subprocess.run(  # nosec B603 # fixed native interpreter and fixture argv
+        environment = dict(
+            os.environ,
+            AIDEVOPS_LIFECYCLE_RUN_ID=run,
+            AIDEVOPS_LIFECYCLE_GENERATION_ID=self.generation,
+            AIDEVOPS_LIFECYCLE_STATE_DIR=str(self.store.directory),
+            NATIVE_ENV_SENTINEL="preserved",
+        )
+        # Fixed native interpreter and fixture argv, not external command text.
+        result = subprocess.run(  # noqa: S603  # nosec B603
             [sys.executable, "-E", "-s", "-B", str(ENTRY),
              "--state-dir", str(self.store.directory), "--worktree", str(self.root),
              "--generation-id", self.generation, "--run-id", run, "--",
              sys.executable, "-E", "-s", "-B", "-c",
-             "import json,os,sys; print(json.dumps([os.environ.get(name) for name in sys.argv[1:]]))",
+             "import json,os,sys; "
+             "print(json.dumps([os.environ.get(name) for name in sys.argv[1:]]))",
              *names],
             cwd=self.root, env=environment, capture_output=True, text=True, timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), [None, None, str(self.store.directory), "preserved"])
+        self.assertEqual(
+            json.loads(result.stdout),
+            [None, None, str(self.store.directory), "preserved"],
+        )
         self.assertEqual(environment[names[0]], run)
         self.assertEqual(self.store.summary()["bindings"], 1)
 
