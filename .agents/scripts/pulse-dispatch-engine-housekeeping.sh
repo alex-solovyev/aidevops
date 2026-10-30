@@ -105,8 +105,8 @@ _pulse_release_post_dispatch_housekeeping_lock() {
 #
 # The in-cycle dependency-graph build, blocked refresh and brief-hold release
 # run late in the deterministic pipeline and are deferred whenever preflight
-# consumes the cycle budget. The cache mtime is their shared success marker:
-# a missing or old cache means none of them has completed recently.
+# consumes the cycle budget. A missing or old cache triggers catch-up; a pending
+# marker keeps downstream recovery eligible even after a graph rebuild.
 # AIDEVOPS_PULSE_BLOCKER_REFRESH_MAX_AGE_S=0 disables the catch-up.
 #######################################
 _pulse_blocker_refresh_starved() {
@@ -114,6 +114,9 @@ _pulse_blocker_refresh_starved() {
 	local cache_file="${DEP_GRAPH_CACHE_FILE:-}"
 	[[ "$max_age" =~ ^[0-9]+$ ]] || max_age=1800
 	[[ "$max_age" -gt 0 && -n "$cache_file" ]] || return 1
+	# Rebuilding the graph freshens the cache before downstream recovery finishes.
+	# Pending work survives failures and signals independently of that mtime.
+	[[ -f "$(_pulse_post_dispatch_housekeeping_statefile).blocker-refresh-pending" ]] && return 0
 	[[ -f "$cache_file" ]] || return 0
 	local now="" mtime=""
 	now=$(date +%s 2>/dev/null) || return 1
@@ -140,7 +143,11 @@ _pulse_run_blocker_refresh_catchup() {
 	[[ "$stage_timeout" =~ ^[0-9]+$ ]] || stage_timeout=600
 	_pulse_blocker_refresh_starved || return 0
 	declare -F build_dependency_graph_cache >/dev/null 2>&1 || return 0
-	echo "[pulse-wrapper] Blocker refresh catch-up: dependency graph cache stale or missing — running starved stages (GH#33246)" >>"$LOGFILE"
+	local pending_file=""
+	pending_file="$(_pulse_post_dispatch_housekeeping_statefile).blocker-refresh-pending"
+	# Persist before any cache write; do not start work we cannot resume safely.
+	touch "$pending_file" || return 1
+	echo "[pulse-wrapper] Blocker refresh catch-up: dependency graph cache stale, missing or recovery pending — running starved stages (GH#33246)" >>"$LOGFILE"
 	PULSE_DEP_GRAPH_FORCE_REBUILD=1 _pulse_run_budget_priority_stage_with_timeout "build_dependency_graph_cache" "$stage_timeout" \
 		build_dependency_graph_cache || return 1
 	[[ "${_PULSE_BUDGET_STAGE_DEFERRED:-0}" == "0" ]] || return 1
@@ -154,6 +161,7 @@ _pulse_run_blocker_refresh_catchup() {
 			release_repaired_brief_holds || return 1
 		[[ "${_PULSE_BUDGET_STAGE_DEFERRED:-0}" == "0" ]] || return 1
 	fi
+	rm -f "$pending_file" || return 1
 	return 0
 }
 
@@ -257,7 +265,10 @@ _pulse_run_resumable_housekeeping_stage() {
 	local state_file="$2"
 	shift 2
 	local age=""
-	if age=$(_pulse_housekeeping_stage_recently_done "$stage_name" "$state_file"); then
+	# A catch-up checkpoint may represent a no-op while the cache was fresh.
+	# Recheck freshness on resume so later interrupted scans cannot starve it.
+	if age=$(_pulse_housekeeping_stage_recently_done "$stage_name" "$state_file") &&
+		{ [[ "$stage_name" != "blocker_refresh_catchup" ]] || ! _pulse_blocker_refresh_starved; }; then
 		echo "[pulse-wrapper] Async post-dispatch housekeeping: resume — skipping ${stage_name} (completed ${age}s ago by an interrupted run)" >>"$LOGFILE"
 		return 0
 	fi
@@ -308,6 +319,8 @@ _pulse_housekeeping_on_signal() {
 # persisted and a following run resumes at the first incomplete stage. The
 # cheap terminal reconciles (preflight_ownership_reconcile) run before the
 # slow GH#33246 blocker-refresh catch-up so they are not starved behind it.
+# Both recovery stages precede optional scans: synchronous housekeeping shares
+# the cycle deadline, which long scans can exhaust before recovery is reached.
 #
 # Args:
 #   $1 - per-stage timeout seconds
@@ -328,6 +341,11 @@ _pulse_run_post_dispatch_housekeeping_stages() {
 	local incomplete=0
 	_PULSE_HOUSEKEEPING_CURRENT_STAGE="startup"
 	echo "[pulse-wrapper] Async post-dispatch housekeeping: started (timeout=${stage_timeout}s)" >>"$LOGFILE"
+	_pulse_run_resumable_housekeeping_stage "preflight_ownership_reconcile" "$state_file" \
+		run_stage_with_timeout "preflight_ownership_reconcile" "$stage_timeout" \
+		_preflight_ownership_reconcile "$stage_timeout" || incomplete=1
+	_pulse_run_resumable_housekeeping_stage "blocker_refresh_catchup" "$state_file" \
+		_pulse_run_blocker_refresh_catchup "$stage_timeout" || incomplete=1
 	_pulse_run_resumable_housekeeping_stage "post_merge_scanner" "$state_file" \
 		_pulse_run_optional_stage_with_timeout "post_merge_scanner" "$stage_timeout" _run_post_merge_review_scanner || incomplete=1
 	_pulse_run_resumable_housekeeping_stage "pr_review_thread_response" "$state_file" \
@@ -338,11 +356,6 @@ _pulse_run_post_dispatch_housekeeping_stages() {
 		_pulse_run_optional_stage_with_timeout "dedup_cleanup" "$stage_timeout" run_simplification_dedup_cleanup || incomplete=1
 	_pulse_run_resumable_housekeeping_stage "fast_fail_prune_expired" "$state_file" \
 		_pulse_run_optional_stage_with_timeout "fast_fail_prune_expired" "$stage_timeout" fast_fail_prune_expired || incomplete=1
-	_pulse_run_resumable_housekeeping_stage "preflight_ownership_reconcile" "$state_file" \
-		run_stage_with_timeout "preflight_ownership_reconcile" "$stage_timeout" \
-		_preflight_ownership_reconcile "$stage_timeout" || incomplete=1
-	_pulse_run_resumable_housekeeping_stage "blocker_refresh_catchup" "$state_file" \
-		_pulse_run_blocker_refresh_catchup "$stage_timeout" || incomplete=1
 	_PULSE_HOUSEKEEPING_CURRENT_STAGE="finishing"
 	if [[ "$incomplete" -eq 0 ]]; then
 		rm -f "$state_file" 2>/dev/null || true
