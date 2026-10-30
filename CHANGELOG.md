@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.98] - 2026-10-30
+
+### Changed
+
+- Maintenance: mark t18818 complete (pr:#36134 completed:2026-10-30) (#36137)
+- Maintenance: sync GitHub issue refs to TODO.md (#36139)
+- Maintenance: mark t18817 complete (pr:#36129 completed:2026-10-30) (#36131)
+- Maintenance: sync GitHub issue refs to TODO.md (#36135)
+
+### Fixed
+
+- exact-head approval supersedes a runner's own draft hold-for-review
+- defer parent dispatch while its consolidation child is in flight; runner-local preconditions are runner_capability_unmet
+
 ## [3.39.97] - 2026-10-30
 
 ### Changed
