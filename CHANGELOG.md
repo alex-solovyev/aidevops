@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.97] - 2026-10-30
+
+### Changed
+
+- Documentation: clarify Ghostscript advisory checks (GH#36116) (#36119)
+
+### Fixed
+
+- re-arm must not release holds with unresolved blocked-by dependencies
+- enforce runner-local dispatch breakers on every worker launch path
+- paginate recovery search and add owner-scoped discovery to the rearm cadence
+
 ## [3.39.96] - 2026-10-30
 
 ### Added
