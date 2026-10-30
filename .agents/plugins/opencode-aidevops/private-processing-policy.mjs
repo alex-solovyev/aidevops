@@ -117,6 +117,22 @@ function protectedConfigFiles(policy) {
   return [policy.file, policy.providersFile].filter(Boolean);
 }
 
+// Case-insensitive: default macOS volumes resolve differently-cased names.
+function namesProtectedConfig(policy, text) {
+  const lower = text.toLowerCase();
+  return protectedConfigFiles(policy).some((file) => lower.includes(basename(file).toLowerCase()));
+}
+
+// -c, -lc, -ec ..., --command and --command=...
+const INTERPRETER_SCRIPT_OPTION = /^(?:-[^-]*c|--command(?:=|$))/;
+
+// Unparseable syntax, or a quoted -c script that is literal to the outer
+// parser but not to its interpreter.
+function isOpaqueShell(words) {
+  return !words || (SHELL_INTERPRETERS.has(basename(String(words[0])))
+    && words.slice(1).some((word) => INTERPRETER_SCRIPT_OPTION.test(word)));
+}
+
 function assertClassificationMutation(policy, name, args, cwd, deny) {
   if (!MUTATION_TOOLS.test(name)) return;
   // Freeze classification across this launch, and prohibit tool edits to its
@@ -141,13 +157,12 @@ function assertShellRead(policy, command, cwd, binding, deny) {
   )) || [];
   if (protectedConfigFiles(policy).some((file) => text.includes(file)
     || targets.includes(canonicalPath(file)))) deny("classification_mutation");
-  // Opaque shell syntax can hide relative config paths regardless of binding.
-  if (!words) deny("unclassifiable_shell_read");
-  // A quoted -c script is literal to the outer parser, not to its interpreter.
-  if (SHELL_INTERPRETERS.has(basename(words[0] || ""))
-    && words.slice(1).some((word) => /^-[^-]*c/.test(word)
-      || word === "--command" || word.startsWith("--command="))) deny("unclassifiable_shell_read");
-  if (binding.bound || !policy.roots.length) return;
+  // Opaque shell can hide relative config aliases. Every session runs this hook,
+  // so outside a classified unbound session deny it only when it names a
+  // protected config file; ordinary pipelines must keep working (GH#36017).
+  const exempt = binding.bound || !policy.roots.length;
+  if (isOpaqueShell(words) && (!exempt || namesProtectedConfig(policy, text))) deny("unclassifiable_shell_read");
+  if (exempt) return;
   // No options: even familiar readers have executable/path-bearing options.
   if (!words?.length || !LITERAL_READERS.has(words[0])
     || words.slice(1).some((word) => word.startsWith("-"))) deny("unclassifiable_shell_read");
