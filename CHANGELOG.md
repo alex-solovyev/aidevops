@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.92] - 2026-10-30
+
+### Changed
+
+- Maintenance: mark t18802 complete (pr:#36047 completed:2026-10-30) (#36050)
+- Maintenance: mark t18801 complete (pr:#36037 completed:2026-10-30) (#36043)
+
+### Fixed
+
+- release rearmed blocker holds independently of LLM cadence (#36042)
+
 ## [3.39.91] - 2026-10-30
 
 ### Changed
