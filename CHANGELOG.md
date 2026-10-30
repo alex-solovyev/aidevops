@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.90] - 2026-10-30
+
+### Changed
+
+- Maintenance: mark t18799 complete (pr:#36023 completed:2026-10-30) (#36020)
+
+### Fixed
+
+- restore stranded worker draft checkpoints (#36031)
+- diagnose and retry Homebrew tap rate limits (#36029)
+
 ## [3.39.89] - 2026-10-30
 
 ### Changed
