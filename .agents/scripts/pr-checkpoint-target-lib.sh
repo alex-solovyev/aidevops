@@ -125,6 +125,7 @@ _pr_checkpoint_revised_target() {
 	local repo_slug="$1" pr_json="$2" issue_json="$3" comments_json="$4"
 	local assignee="$5" lease="${6:-}" session="${7:-}" claiming="${8:-false}"
 	local approval="" linked_issue="" pr_number="" normalized_issue="" normalized_pr=""
+	local status_prefix="status:" blocked_status="status:blocked"
 	local trusted_logins=""
 	trusted_logins=$(_pr_checkpoint_trusted_logins "$comments_json" "$repo_slug") || return 1
 	# Keep complete metadata off exec argv (GH#35632), including the potentially
@@ -144,6 +145,22 @@ _pr_checkpoint_revised_target() {
 	case "$permission" in admin | maintain | write) ;; *) return 1 ;; esac
 	linked_issue=$(jq -r '.issue' <<<"$approval") || return 1
 	pr_number=$(jq -r '.pr' <<<"$approval") || return 1
+	if jq -e --arg prefix "$status_prefix" --arg blocked "$blocked_status" \
+		'[.labels[].name | select(startswith($prefix))] == [$blocked]' <<<"$issue_json" >/dev/null; then
+		# Comments update issue.updated_at as well, including our own claim during
+		# consensus. Check lifecycle events so that claim remains valid but a later
+		# label removal/reapplication cannot revive the approved blocked snapshot.
+		local lifecycle_events="" blocked_snapshot=""
+		blocked_snapshot=$(jq -er '.blocked_issue_updated_at' <<<"$approval") || return 1
+		lifecycle_events=$(gh api "repos/${repo_slug}/issues/${linked_issue}/events?per_page=100" --paginate --slurp) || return 1
+		jq -e --arg snapshot "$blocked_snapshot" --arg prefix "$status_prefix" --arg blocked "$blocked_status" '
+			arrays | flatten |
+			[.[] | select(.event == "labeled" or .event == "unlabeled") |
+				select(.label.name | startswith($prefix))] |
+			any(.event == "labeled" and .label.name == $blocked) and
+			all(.created_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T") and . <= $snapshot)
+		' <<<"$lifecycle_events" >/dev/null || return 1
+	fi
 	normalized_pr="$pr_json"
 	if ! _pr_closing_link_matches_issue "$pr_json" "$repo_slug" "$linked_issue"; then
 		# A signed exact pair can recover a partial For/Ref-only checkpoint,
@@ -155,8 +172,22 @@ _pr_checkpoint_revised_target() {
 			.closingIssuesReferences = [{number:$issue,repository:{name:$parts[1],owner:{login:$parts[0]}}}]
 		' <<<"$pr_json") || return 1
 	fi
+	# The exact approval supplies missing provenance only in this local view.
+	# Keep all real labels so protective labels still reject the checkpoint.
+	normalized_pr=$(jq -e "${_PR_CHECKPOINT_FOR_LINK_JQ_DEFS}"'
+		select((.labels | type) == "array") |
+		.labels += [{name:worker_origin_label}]
+	' <<<"$normalized_pr") || return 1
+	# The validator requires an approval-time blocked snapshot; the event fence
+	# above rejects later lifecycle changes before this sole-blocked normalization.
+	# Conflicting statuses and every other hold remain visible to the predicate.
 	normalized_issue=$(jq --arg interactive_label "$_PCTL_INTERACTIVE_LABEL" \
-		'.labels |= map(select(.name != $interactive_label))' <<<"$issue_json") || return 1
+		--arg prefix "$status_prefix" --arg blocked "$blocked_status" \
+		'.labels |= map(select(.name != $interactive_label)) |
+		if [.labels[].name | select(startswith($prefix))] == [$blocked] then
+			(if (.assignees | length) == 0 then "status:available" else "status:in-review" end) as $status |
+			.labels |= map(if .name == $blocked then .name = $status else . end)
+		else . end' <<<"$issue_json") || return 1
 	_pr_checkpoint_pr_metadata_is_eligible "$normalized_pr" "$repo_slug" "$pr_number" \
 		"$linked_issue" "" "" "$(jq -r '.runner' <<<"$approval")" || return 1
 	# The revision validator above authorizes the original owner or an unassigned

@@ -7,6 +7,7 @@ import copy
 import datetime as dt
 import hashlib
 import importlib.util
+import itertools
 import json
 import os
 import pathlib
@@ -67,6 +68,20 @@ def completed_release_fixture(reason="worker_complete", actor="recovering-worker
     return data
 
 
+def unlabelled_blocked_fixture():
+    """An exact approved checkpoint has lost provenance and is solely blocked."""
+    data = fixture()
+    data["pr"]["labels"] = []
+    data["issue"]["labels"][1] = {"name": "status:blocked"}
+    data["issue"]["updated_at"] = "2026-09-05T11:00:00Z"
+    data["issue_events"] = [{"event": "labeled", "label": {"name": "status:blocked"},
+                             "created_at": data["issue"]["updated_at"]}]
+    data["comments"].pop()
+    line = revision.template({**data, "release_id": 2, "attempt": "attempt:original"})
+    data["comments"].append(comment(3, line, "maintainer", "OWNER"))
+    return data
+
+
 def insert_renewed_attempt(data):
     """Insert a same-actor ready lease for a different attempt before the release."""
     renewed = copy.deepcopy(data["comments"][0])
@@ -75,9 +90,6 @@ def insert_renewed_attempt(data):
 
 
 class RevisionTests(unittest.TestCase):
-    def test_released_revised(self):
-        self.assertEqual(revision.validate(fixture())["approval_id"], 3)
-
     def test_legacy_release_and_ambiguous_attempt(self):
         data = fixture()
         data["comments"][1]["body"] = "CLAIM_RELEASED reason=blocked runner=worker"
@@ -143,6 +155,20 @@ class RevisionTests(unittest.TestCase):
         for event in EVENTS:
             with self.subTest(event=event), self.assertRaises(ValueError):
                 revision.validate({**data, "comments": data["comments"] + [comment(4, event + "new-owner")]})
+
+    def test_released_revised_lifecycle_requires_current_approval_snapshot(self):
+        self.assertEqual(revision.validate(fixture())["approval_id"], 3)
+        data = unlabelled_blocked_fixture()
+        self.assertEqual(revision.validate(data)["approval_id"], 3)
+        # The approval comment's own issue update is acceptable.
+        data["issue"]["updated_at"] = data["comments"][-1]["created_at"]
+        self.assertEqual(revision.validate(data)["approval_id"], 3)
+        missing_metadata = copy.deepcopy(data["issue"])
+        missing_metadata.pop("updated_at")
+        self.assertRaises(ValueError, revision.validate, {**data, "issue": missing_metadata})
+        without_snapshot = {**data["comments"][-1], "body": fixture()["comments"][-1]["body"]}
+        self.assertRaises(ValueError, revision.validate,
+                          {**data, "comments": data["comments"][:-1] + [without_snapshot]})
 
     def test_completed_release_retains_author_binding_and_actual_owner(self):
         for reason in ("clean", "worker_complete"):
@@ -234,34 +260,67 @@ class RevisionTests(unittest.TestCase):
                 revision.validate({**data, key: value})
 
     def test_shell_predicate_preserves_holds_and_linkage(self):
-        data = fixture()
+        data = unlabelled_blocked_fixture()
         # Supply current wall time for the shell boundary, avoiding date-dependent fixtures.
         for c in data["comments"]:
             c["created_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-        command = ('source "$1/pr-checkpoint-target-lib.sh"; '
-                   'gh() { [[ "$*" == "api repos/owner/repo/collaborators/maintainer/permission --jq .permission" ]] || return 90; '
+        command = ('source "$1/pr-checkpoint-target-lib.sh"; TEST_EVENTS="$6"; '
+                   'gh() { if [[ "$*" == "api repos/owner/repo/issues/123/events?per_page=100 --paginate --slurp" ]]; then '
+                   'printf "%s" "$TEST_EVENTS"; return 0; fi; '
+                   '[[ "$*" == "api repos/owner/repo/collaborators/maintainer/permission --jq .permission" ]] || return 90; '
                    'printf "%s" "${TEST_PERMISSION:-write}"; }; '
                    '_pr_checkpoint_revised_target "$2" "$3" "$4" "$5" worker')
         def run(candidate):
             # Fixed Bash source and locally constructed JSON are positional data, never shell source.
             return subprocess.run([BASH, "-c", command, "test", str(SCRIPTS), candidate["repo"],  # nosec B603
                                    json.dumps(candidate["pr"]), json.dumps(candidate["issue"]),
-                                   json.dumps(candidate["comments"])], capture_output=True, check=False).returncode
+                                   json.dumps(candidate["comments"]),
+                                   json.dumps(candidate["issue_events"])], capture_output=True, check=False).returncode
         self.assertEqual(run(data), 0)
-        for label in ("hold-for-review", "needs-maintainer-review", "no-auto-dispatch", "persistent", "blocked"):
+        changed = copy.deepcopy(data)
+        # A comment/claim update alone must not invalidate the blocked snapshot.
+        changed["issue"]["updated_at"] = "2099-01-01T00:00:00Z"
+        unassigned_issue = {**changed["issue"], "assignees": []}
+        self.assertEqual(run(changed), 0)
+        self.assertEqual(run({**changed, "issue": unassigned_issue}), 0)
+        # Reapply the same sole blocked label after approval: reject both owner
+        # states even though the current label set matches the approved one.
+        changed["issue_events"].append({"event": "labeled", "label": {"name": "status:blocked"},
+                                        "created_at": changed["issue"]["updated_at"]})
+        self.assertNotEqual(run(changed), 0)
+        self.assertNotEqual(run({**changed, "issue": unassigned_issue}), 0)
+        shared_holds = ("hold-for-review", "needs-maintainer-review", "no-auto-dispatch", "persistent")
+        label_cases = itertools.chain(
+            itertools.product(("pr", "issue"), shared_holds),
+            (("pr", "no-takeover"), ("issue", "needs-maintainer-permissions")),
+            itertools.product(("issue",), ("blocked", "status:available", "status:in-progress", "status:done")),
+        )
+        for surface, label in label_cases:
             changed = copy.deepcopy(data)
-            changed["issue"]["labels"].append({"name": label})
-            self.assertNotEqual(run(changed), 0)
-        for body in ("For #1234", "mentions #123", "For #123 and #124"):
-            changed = copy.deepcopy(data)
-            changed["pr"]["body"] = body
-            self.assertNotEqual(run(changed), 0)
+            changed[surface]["labels"].append({"name": label})
+            self.assertNotEqual(run(changed), 0, (surface, label))
+        invalidations = (
+            ("missing", {"comments": data["comments"][:-1]}),
+            ("head", {"pr": {**data["pr"], "headRefOid": "2" * 40}}),
+            ("body", {"issue": {**data["issue"], "body": data["issue"]["body"] + " changed"}}),
+            ("expired", {"comments": data["comments"][:-1] + [
+                {**data["comments"][-1], "created_at": "2020-01-01T00:00:00Z"}]}),
+            ("owner", {"issue": {**data["issue"], "assignees": [{"login": "other"}]}}),
+            ("successor", {"comments": data["comments"] + [
+                comment(4, "Interactive session claimed", "maintainer")]}),
+            ("prefix collision", {"pr": {**data["pr"], "body": "For #1234"}}),
+            ("bare mention", {"pr": {**data["pr"], "body": "mentions #123"}}),
+            ("ambiguous linkage", {"pr": {**data["pr"], "body": "For #123 and #124"}}),
+        )
+        for case, overrides in invalidations:
+            self.assertNotEqual(run({**data, **overrides}), 0, case)
 
     def test_claim_handoff_prelaunch_ready_and_rollback(self):
         # (unassigned, fixture builder, needs a generated approval for its history)
         cases = ((False, fixture, False), (True, fixture, False),
                  (True, released_successor_fixture, True),
-                 (False, completed_release_fixture, True), (True, completed_release_fixture, True))
+                 (False, completed_release_fixture, True), (True, completed_release_fixture, True),
+                 (False, unlabelled_blocked_fixture, False), (True, unlabelled_blocked_fixture, False))
         for unassigned, build, approve in cases:
             with self.subTest(unassigned=unassigned, fixture=build.__name__), tempfile.TemporaryDirectory() as root:
                 data = build()
@@ -301,7 +360,9 @@ class RevisionTests(unittest.TestCase):
                     self.assertEqual(revision.validate(data)["approval_id"], approval_id)
                 if unassigned:
                     data["issue"]["assignees"] = []
-                    data["issue"]["labels"][1] = {"name": "status:available"}
+                    status = data["issue"]["labels"][1]["name"]
+                    # Release the assigned lifecycle without erasing an approved block.
+                    data["issue"]["labels"][1] = {"name": {"status:in-review": "status:available"}.get(status, status)}
                 for c in data["comments"]:
                     c["created_at"] = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 state = pathlib.Path(root) / "state.json"
