@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.89] - 2026-10-30
+
+### Changed
+
+- continue open worker drafts after draft-checkpoint, clean and completed releases
+
 ## [3.39.88] - 2026-10-30
 
 ### Fixed
