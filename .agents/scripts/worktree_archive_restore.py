@@ -12,6 +12,10 @@ import sys
 import uuid
 
 from worktree_archive_administration import git
+from worktree_archive_registration import (
+    LEGACY_TABLE, MANAGED_TABLE, NOT_ENROLLED, REGISTRATION_SQL,
+    creation_registration, legacy_registration, registration_table,
+)
 from worktree_archive_snapshot import fetch_preservation
 from worktree_recovery_timing import timed
 
@@ -29,43 +33,6 @@ def object_store_files(objects):
             yield path
 
 
-MANAGED_TABLE = "worktree_managed_lifetimes"
-LEGACY_TABLE = "worktree_creation_backends"
-NOT_ENROLLED = "restore-proof:verification-copy-not-enrolled"
-# Static SQL per registration table; only values are bound as parameters.
-REGISTRATION_SQL = {
-    MANAGED_TABLE: ("SELECT record FROM worktree_managed_lifetimes WHERE path = ?",
-                    "DELETE FROM worktree_managed_lifetimes WHERE path = ?"),
-    LEGACY_TABLE: ("SELECT record FROM worktree_creation_backends WHERE path = ?",
-                   "DELETE FROM worktree_creation_backends WHERE path = ?"),
-}
-
-
-def registration_table(registered):
-    """The registry table that owns a sealed creation registration."""
-    if registered.get("backend") == "legacy-guards" and "manager" not in registered:
-        return LEGACY_TABLE
-    return MANAGED_TABLE
-
-
-def legacy_registration(connection, target):
-    """Return the legacy-guards creation record for target, or None."""
-    from worktree_lifetime_archive import require
-    if connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-                          (LEGACY_TABLE,)).fetchone() is None:
-        return None
-    row = connection.execute(REGISTRATION_SQL[LEGACY_TABLE][0], (str(target),)).fetchone()
-    if row is None:
-        return None
-    registered = json.loads(row[0])
-    invalid = "restore-proof:invalid-creation-backend"
-    require(registered.get("schema") == 1, invalid)
-    require(registration_table(registered) == LEGACY_TABLE, invalid)
-    require(registered.get("identity", {}).get("path") == str(target), invalid)
-    require(registered.get("generation"), invalid)
-    return registered
-
-
 def failure_message(final, default):
     """Map a restore child's final exception line to its bounded message.
 
@@ -78,25 +45,6 @@ def failure_message(final, default):
     if final.startswith("ValueError: "):
         return final.removeprefix("ValueError: ")
     return default
-
-
-def creation_registration(connection, target):
-    """GH#35957: resolve the verification copy's creation registration.
-
-    A managed-lifetime row wins. macOS and AIDEVOPS_WORKTREE_MANAGER=legacy-guards
-    creation deliberately records only a worktree_creation_backends entry and never
-    a synthetic managed receipt (worktree_lifetime_owner.register), so the proof
-    binds that record's identity and generation instead.
-    """
-    from worktree_lifetime_archive import managed_module, require
-    managed = managed_module()
-    try:
-        registered = managed.load(connection, str(target))
-    except managed.NotEnrolled:
-        registered = legacy_registration(connection, target)
-        require(registered is not None, NOT_ENROLLED)
-    managed.verify_identity(registered, target)
-    return registered
 
 
 def creation_receipt(target, owner_pid):
@@ -225,7 +173,7 @@ class RestorationProof:
                 old_slot.rmdir()
                 previous["state"] = "cleaned"
                 save(record)
-            elif (previous.get("state") == "restoring" and old_slot.is_dir()
+            elif (previous.get("state") == "restoring"
                   and not os.path.lexists(old_slot / ".creation.json")):
                 self.recover_unsealed(directory, previous, save, record,
                                       Path(self.manifest["source_git_common_dir"]))
@@ -322,24 +270,37 @@ class RestorationProof:
         Before legacy-guards creation was accepted, macOS failed after Git and
         registry creation but before .creation.json, leaving a "restoring" slot
         that held a registered worktree. Remove it only when the slot inode,
-        sole entry, verification owner row, legacy creation identity and Git
-        common dir all match; any other unsealed copy stays fail-closed.
+        sole entry, legacy creation identity and Git common dir all match. A
+        missing owner is accepted only for clean, ref-reachable scratch. Missing
+        slots require absence of ownership and Git registration; historical
+        creation records are left untouched because no deletion is needed.
         """
         from worktree_lifetime_archive import inode, managed_module, require, transaction
         slot = directory / receipt["slot"]
         target = slot / "worktree"
         require(common.is_absolute() and common == common.resolve(strict=True), "restore-proof:unsafe-base")
         changed = "restore-proof:slot-changed"
+        require(Path(receipt["slot"]).name == receipt["slot"]
+                and slot.parent == directory and slot.name.startswith(".restore-"), changed)
+        unsealed = "restore-proof:unsealed-copy-retained; inspect owned scratch"
+        require(directory == directory.resolve(strict=True), changed)
+        if not os.path.lexists(slot):
+            with transaction() as connection:
+                require(connection.execute("SELECT 1 FROM worktree_owners WHERE worktree_path = ?",
+                                           (str(target),)).fetchone() is None, unsealed)
+                entries = git(common, "worktree", "list", "--porcelain", "-z").split(b"\0")
+                require(b"worktree " + os.fsencode(target) not in entries, unsealed)
+                receipt["state"] = "cleaned"
+                save(record)
+            return
         require(slot == slot.resolve(strict=True), changed)
         require(inode(slot) == receipt["slot_inode"], changed)
-        require(slot.parent == directory and slot.name.startswith(".restore-"), changed)
         require({entry.name for entry in slot.iterdir()} == {"worktree"}, changed)
         require(target.is_dir() and not target.is_symlink(), changed)
-        unsealed = "restore-proof:unsealed-copy-retained; inspect owned scratch"
         with transaction() as connection:
             owner = connection.execute("SELECT task_id, branch FROM worktree_owners WHERE worktree_path = ?",
                                        (str(target),)).fetchone()
-            require(owner == ("archive-verification:" + slot.name, "HEAD"), unsealed)
+            require(owner in (None, ("archive-verification:" + slot.name, "HEAD")), unsealed)
             if connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
                                   (MANAGED_TABLE,)).fetchone():
                 require(connection.execute(REGISTRATION_SQL[MANAGED_TABLE][0], (str(target),)).fetchone() is None,
@@ -349,7 +310,14 @@ class RestorationProof:
             # verify_identity recomputes path/admin/common from Git itself.
             managed_module().verify_identity(registered, target)
             require(registered["identity"]["common"] == str(common), "restore-proof:wrong-base")
+            index_entries = git(target, "ls-files", "-v", "-z").split(b"\0")
+            require(not any(entry[:1] == b"S" or entry[:1].islower()
+                            for entry in index_entries if entry), unsealed)
+            require(not git(target, "status", "--porcelain=v1", "--untracked-files=all", "--ignored"),
+                    unsealed)
+            require(git(target, "for-each-ref", "--contains=HEAD", "--format=%(refname)").strip(), unsealed)
             entries = git(common, "worktree", "list", "--porcelain", "-z").split(b"\0")
+            require(b"worktree " + os.fsencode(target) in entries, unsealed)
             repository = Path(os.fsdecode(next(entry[9:] for entry in entries if entry.startswith(b"worktree "))))
             git(repository, "worktree", "remove", "--force", str(target))
             require(not os.path.lexists(target) and not os.path.lexists(Path(registered["identity"]["admin"])),
