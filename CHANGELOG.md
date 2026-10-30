@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.94] - 2026-10-30
+
+### Added
+
+- scope Cloudron release approval processing (#36078)
+
+### Changed
+
+- Maintenance: mark t18807 complete (pr:#36065 completed:2026-10-30) (#36067)
+- Maintenance: sync GitHub issue refs to TODO.md (#36059)
+
+### Fixed
+
+- pre-edit regression test uses physical tmp path; widen preflight trigger
+- re-arm aged checkpoint attention for untried runners; take over idle interactive PRs after 12h
+- run recovery before optional housekeeping scans (#36072)
+- recover authenticated checkpoint release handoffs
+- fall back to GraphQL for terminal blocker recovery (GH#36063) (#36065)
+
 ## [3.39.93] - 2026-10-30
 
 ### Changed
