@@ -10,6 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.39.99] - 2026-10-31
+
+### Changed
+
+- Tests: keep retired-stage guards on both dispatch engine and housekeeping (GH#36160) (#36170)
+- Tests: cover main-cycle permission breaker in dispatch pipeline (GH#36154) (#36168)
+- Tests: reject stdout on persistent snapshot read failures (GH#36150) (#36157)
+- Maintenance: sync GitHub issue refs to TODO.md (#36146)
+
+### Fixed
+
+- re-verify and defer unreadable POST_PR_HANDOFF instead of tier escalation
+- classify rename sources and isolate data fixture (GH#36163) (#36173)
+- recheck hard stop before restoring draft-checkpoint candidate (#36166)
+- trigger pre-edit regression for worktree entrypoint (GH#36151) (#36159)
+- preserve helper pins during floating migration (GH#36149) (#36158)
+- preserve full changelog section in release notes (#36156)
+- preserve complete-frame quota counters when sibling frame is incomplete (GH#36153) (#36167)
+- accept user-private group-writable git admin dirs in generation enrollment (GH#36142) (#36145)
+- task-complete-helper refuses canonical checkouts (GH#36130) (#36140)
+
 ## [3.39.98] - 2026-10-30
 
 ### Changed
