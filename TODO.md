@@ -1834,6 +1834,8 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18840 fix(signature): CI gh shim signs comments as vunknown because version.sh cannot find VERSION #bug #framework ref:GH#36247 pr:#36254 completed:2026-10-31
 
+- [ ] t18841 fix(tests): make test-gh-shim.sh hermetic so deployed libs cannot change its result #bug #framework ref:GH#36255
+
 ## In Progress
 
 - [x] t18768 Adapt Impeccable, Taste Skill and Fontjoy design guidance without tracking #feat #interactive #auto-dispatch tier:standard ~2h ref:GH#35590 assignee:marcusquinn pr:#35591 logged:2026-10-25 started:2026-10-25 -> [todo/tasks/t18768-brief.md] completed:2026-10-25
