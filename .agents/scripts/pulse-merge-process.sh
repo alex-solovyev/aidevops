@@ -947,6 +947,10 @@ _recover_interactive_pr_work_issue() {
 # Conflict checkpoints intentionally use For/Ref, not closing keywords.
 # Resolve independently of the caller's closing-only target, retaining the
 # existing linked-issue validation and all later routing guards (GH#33763).
+# Partial worker deliveries also declare their work issue with a standalone
+# For/Ref line. The merge gates already associate that explicit identity, so
+# CI/review repair must use it too or the PR is stranded with failing checks
+# and no route (GH#36260). It is a repair target only, never closure authority.
 _route_pr_resolve_work_issue() {
 	local pr_number="$1"
 	local repo_slug="$2"
@@ -954,9 +958,12 @@ _route_pr_resolve_work_issue() {
 	local kind="$4"
 	if [[ "$kind" == "conflict" ]]; then
 		linked_issue=$(_extract_pr_work_issue "$pr_number" "$repo_slug") || return 1
+	elif [[ -z "$linked_issue" ]]; then
+		linked_issue=$(_extract_pr_work_issue "$pr_number" "$repo_slug" explicit) || linked_issue=""
 	fi
 	if [[ -z "$linked_issue" ]]; then
-		linked_issue=$(_recover_interactive_pr_work_issue "$pr_number" "$repo_slug") || return 1
+		# Fall through so an unroutable PR always logs why, every cycle.
+		linked_issue=$(_recover_interactive_pr_work_issue "$pr_number" "$repo_slug") || linked_issue=""
 	fi
 	_route_pr_has_linked_issue "$pr_number" "$repo_slug" "$linked_issue" "$kind" || return 1
 	printf '%s' "$linked_issue"
@@ -967,13 +974,20 @@ _route_pr_issue_labels_for_dispatch() {
 	local pr_number="$1"
 	local repo_slug="$2"
 	local linked_issue="$3"
+	local issue_meta=""
 	local issue_labels=""
 
-	if ! issue_labels=$(gh api "repos/${repo_slug}/issues/${linked_issue}" \
-		--jq '[.labels[].name] | join(",")' 2>/dev/null); then
+	if ! issue_meta=$(gh api "repos/${repo_slug}/issues/${linked_issue}" 2>/dev/null); then
 		echo "[pulse-wrapper] _route_pr_to_fix_worker: linked issue #${linked_issue} metadata unavailable for PR #${pr_number} in ${repo_slug} — refusing destructive routing" >>"$LOGFILE"
 		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
 	fi
+	# The issues endpoint also returns pull requests. Never dispatch feedback to
+	# another PR merely because a For/Ref declaration names its number.
+	if ! printf '%s' "$issue_meta" | jq -e 'type == ({} | type) and (has("pull_request") | not)' >/dev/null 2>&1; then
+		echo "[pulse-wrapper] _route_pr_to_fix_worker: target #${linked_issue} for PR #${pr_number} in ${repo_slug} is not a verified issue — refusing destructive routing" >>"$LOGFILE"
+		return 1
+	fi
+	issue_labels=$(printf '%s' "$issue_meta" | jq -er '[.labels[].name] | join(",")') || return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
 	[[ ",${issue_labels}," != *",needs-maintainer-review,"* ]] || return 1
 	printf '%s\n' "$issue_labels"
 	return 0
